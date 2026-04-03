@@ -1,0 +1,32 @@
+# PyCache
+**/__pycache__/*
+
+# Omnisafe runs
+**/runs/*
+
+# Wandb logs
+**/wandb/*
+
+# CityLearn renders
+**/render/*
+
+# Images
+**/imgs/*
+
+# Linear regression result plots
+**/linear_regressor_results/*
+
+# LIME result plots
+**/lime_analysis_results/*
+
+# Evaluation plots
+**/evaluation_plots/*
+
+# VSCode settings
+**/.vscode/*
+
+# Build files
+**/build/*
+
+# Distribution files
+**/*.egg-info/*
