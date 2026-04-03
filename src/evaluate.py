@@ -1,10 +1,13 @@
 # Imports
 import json
-import os
+import os, sys
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from CityLearn.citylearn.citylearn import CityLearnEnv
 from CityLearn.citylearn.data import DataSet
 from utils import Config, default_env_config, select_env_config
@@ -410,15 +413,15 @@ def main():
     # ── Plotting — overlaid curves ────────────────────────────────────
     plot_cooling_device(
         results_rbc, results_reg,
-        save_path='evaluation_plots/cooling_device.png'
+        save_path='../evaluation_plots/cooling_device.png'
     )
     plot_dhw_storage(
         results_rbc, results_reg,
-        save_path='evaluation_plots/dhw_storage.png'
+        save_path='../evaluation_plots/dhw_storage.png'
     )
     plot_electrical_storage(
         results_rbc, results_reg,
-        save_path='evaluation_plots/electrical_storage.png'
+        save_path='../evaluation_plots/electrical_storage.png'
     )
 
 if __name__ == '__main__':

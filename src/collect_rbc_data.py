@@ -22,7 +22,7 @@ def collect_data(agent_clas, env):
         DataFrame   : A .csv file containing observations and actions.
     """
     agent = agent_clas(env)
-    observations, _ = env.reset()
+    obs, _ = env.reset()
     done = False
     rows = []
 
@@ -30,11 +30,11 @@ def collect_data(agent_clas, env):
     action_names = env.action_names[0]
 
     while not done:
-        actions = agent.predict(observations)
+        actions = agent.predict(obs)
         next_observations, rewards, terminated, truncated, info = env.step(actions)
 
         def get_obs(name):
-            return observations[0][obs_names.index(name)] if name in obs_names else None
+            return obs[0][obs_names.index(name)] if name in obs_names else None
 
         def get_act(name):
             return actions[0][action_names.index(name)] if name in action_names else None
