@@ -1,9 +1,10 @@
 import sys, os
 
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from CityLearn.citylearn.agents.base import Agent
-from CityLearn.citylearn.agents.rbc import OptimizedRBC
+from CityLearn.citylearn.agents.rbc import BasicRBC, HourRBC, OptimizedRBC
 from CityLearn.citylearn.citylearn import CityLearnEnv, Building
 
 # Core
@@ -12,8 +13,47 @@ from typing import Mapping, Union
 import warnings; warnings.filterwarnings("ignore", category=UserWarning)
 from utils import *
 
-root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-imgs_path = os.path.join(root_path, 'imgs')
+'''
+class CustomRBC(BasicRBC):
+
+    def __init__(self, env: CityLearnEnv, **kwargs: Any):
+        super().__init__(env, **kwargs)
+
+    @HourRBC.action_map.setter
+    def action_map(self, action_map: Union[List[Mapping[str, Mapping[int, float]]], Mapping[str, Mapping[int, float]], Mapping[int, float]]):
+        if action_map is None:
+            action_map = {}
+            action_names = [a_ for a in self.action_names for a_ in a]
+            action_names = list(set(action_names))
+
+
+            for n in action_names:
+                action_map[n] = {}
+
+                if 'electrical_storage' in n:
+                    for hour in Building.get_periodic_observation_metadata()['hour']:
+                        # TODO: Implement RBC policy
+
+                        action_map[n][hour] = value
+                
+                elif n == 'dhw_storage':
+                    for hour in Building.get_periodic_observation_metadata()['hour']:
+                        # TODO: Implement RBC policy
+
+                        action_map[n][hour] = value
+
+                elif n == 'cooling_device':
+                    for hour in Building.get_periodic_observation_metadata()['hour']:
+                        # TODO: Implement RBC policy
+
+                        action_map[n][hour] = value
+                
+                else:
+                    raise ValueError(f'Unknown action name: {n}')
+                
+        # Imposta la mappa nella superclasse
+        HourRBC.action_map.fset(self, action_map)
+'''
 
 class AdvancedRBC(Agent):
     """
@@ -262,39 +302,113 @@ class AdvancedRBC(Agent):
                             action[available_act.index('cooling_device')] = 0.1
 
             if 'electrical_storage' in available_act:
-                # Peak hours
-                if 8 <= hour <= 10 or 18 <= hour <= 21:
-                    if solar_gen > 0.6:
-                        if elec_price > 0.03:
-                            action[available_act.index('electrical_storage')] = -0.5
+                if electrical_storage_soc == 1.0:
+                    # Peak hours -> discharge
+                    if 8 <= hour <= 10 or 18 <= hour <= 21:
+                        # High solar generation
+                        if solar_gen > 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = -0.66
+                            else:
+                                action[available_act.index('electrical_storage')] = -0.85
+                        elif 0.3 <= solar_gen <= 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = -0.45
+                            else:
+                                action[available_act.index('electrical_storage')] = -0.6
                         else:
-                            action[available_act.index('electrical_storage')] = -0.35
-                    elif 0.3 <= solar_gen <= 0.6:
-                        if elec_price > 0.03:
-                            action[available_act.index('electrical_storage')] = -0.65
-                        else:
-                            action[available_act.index('electrical_storage')] = -0.5
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = -0.3
+                            else:
+                                action[available_act.index('electrical_storage')] = -0.4
+                    # Off-peak hours -> battery at max capacity so no action
                     else:
-                        if elec_price > 0.03:
-                            action[available_act.index('electrical_storage')] = -0.8
+                        action[available_act.index('electrical_storage')] = 0.0
+
+                elif 0.5 <= electrical_storage_soc < 1.0:
+                    # Peak hours -> discharge
+                    if 8 <= hour <= 10 or 18 <= hour <= 21:
+                        # High solar generation
+                        if solar_gen > 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = -0.5
+                            else:
+                                action[available_act.index('electrical_storage')] = -0.6
+                        elif 0.3 <= solar_gen <= 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = -0.35
+                            else:
+                                action[available_act.index('electrical_storage')] = -0.45
                         else:
-                            action[available_act.index('electrical_storage')] = -0.6
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = -0.15
+                            else:
+                                action[available_act.index('electrical_storage')] = -0.3
+                    # Off-peak hours
+                    else:
+                        # High solar generation
+                        if solar_gen > 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.5
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.35
+                        elif 0.3 <= solar_gen <= 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.4
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.25
+                        else:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.3
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.15
+                
+                elif 0.2 <= electrical_storage_soc < 0.5:
+                    # Peak hours -> low battery capacity so minimal discharge
+                    if 8 <= hour <= 10 or 18 <= hour <= 21:
+                        action[available_act.index('electrical_storage')] = -0.1
+                    # Off-peak hours -> charge
+                    else:
+                        # High solar generation
+                        if solar_gen > 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.7
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.55
+                        elif 0.3 <= solar_gen <= 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.65
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.4
+                        else:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.5
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.3
+                
+                # Very low state of charge -> charge
                 else:
-                    if solar_gen > 0.6:
-                        if elec_price <= 0.03:
-                            action[available_act.index('electrical_storage')] = 0.9
-                        else:
-                            action[available_act.index('electrical_storage')] = 0.7
-                    elif 0.3 <= solar_gen <= 0.6:
-                        if elec_price <= 0.03:
-                            action[available_act.index('electrical_storage')] = 0.6
-                        else:
-                            action[available_act.index('electrical_storage')] = 0.4
+                    # Peak hours -> no action
+                    if 8 <= hour <= 10 or 18 <= hour <= 21:
+                        action[available_act.index('electrical_storage')] = 0.0
+                    # Off-peak hours -> charge
                     else:
-                        if elec_price <= 0.03:
-                            action[available_act.index('electrical_storage')] = 0.35
+                        # High solar generation
+                        if solar_gen > 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.9
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.6
+                        elif 0.3 <= solar_gen <= 0.6:
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.7
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.45
                         else:
-                            action[available_act.index('electrical_storage')] = 0.1
+                            if elec_price < 0.03:
+                                action[available_act.index('electrical_storage')] = 0.6
+                            else:
+                                action[available_act.index('electrical_storage')] = 0.4
 
             if 'dhw_storage' in available_act:
                 if 0.7 <= dhw_storage_soc <= 1.0:
@@ -371,6 +485,18 @@ class AdvancedRBC(Agent):
                     else:
                         action[available_act.index('dhw_storage')] = 0.7
 
+            # Debugging log for actions values and observations values -> Can be modified as needed
+            # Actions value logging should be implemented in a more structured way for UserRBC
+            debug_action_dict = {}
+            if 'cooling_device' in available_act:
+                debug_action_dict['cooling_device'] = action[available_act.index('cooling_device')]
+            if 'dhw_storage' in available_act:
+                debug_action_dict['dhw_storage'] = action[available_act.index('dhw_storage')]
+            if 'electrical_storage' in available_act:
+                debug_action_dict['electrical_storage'] = action[available_act.index('electrical_storage')]
+
+            print(f"[DEBUG] Hour (from obs): {hour:.0f}, Actions: {debug_action_dict}")
+
             actions.append(action)
 
         # Return overwritten actions
@@ -384,11 +510,52 @@ def run_simulation(agent, env):
     observations, _ = env.reset()
     max_steps = env.time_steps - 1
 
+    # KPI logging: weekly and daily -> To implement in UserRBC
+    weekly_interval_steps = 7 * 24  # 168 steps
+    daily_interval_steps = 1 * 24   # 24 steps
+    kpi_dir = 'kpi_logs'
+    # Log files for weekly and daily KPIs are saved as .txt files
+    # Change from .csv to .txt for better readability has been taken into consideration for UserRBC
+    weekly_kpi_file = os.path.join(kpi_dir, f'{agent.__class__.__name__}_weekly_kpis_log.txt')
+    daily_kpi_file = os.path.join(kpi_dir, f'{agent.__class__.__name__}_daily_kpis_log.txt')
+    os.makedirs(kpi_dir, exist_ok=True)
+
+    def _append_kpis(step_index: int, filepath: str):
+        try:
+            kpis = get_kpis(env)
+            # Filter district-level KPIs
+            kpis = kpis[kpis['level'] == 'district']
+
+            day = step_index // 24
+            with open(filepath, 'a') as fh:
+                fh.write(f'--- STEP: {step_index} (day {day}) ---\n')
+                for _, row in kpis.iterrows():
+                    fh.write(f"{row['kpi']}: {row['value']}\n")
+                fh.write('\n')
+        except Exception as e:
+            # Debugging log
+            with open(filepath, 'a') as fh:
+                fh.write(f'Failed to write KPIs at step {step_index}: {e}\n\n')
+
+    # Initial KPI snapshots at start (step 0)
+    _append_kpis(0, daily_kpi_file)
+    _append_kpis(0, weekly_kpi_file)
+
+    step_index = 0
     for _ in range(max_steps):
         actions = agent.predict(observations)
         observations, reward, terminated, truncated, info = env.step(actions)
+        step_index += 1
 
-    print("Simulation completed.")
+        # Write daily KPIs every daily_interval_steps
+        if step_index % daily_interval_steps == 0:
+            _append_kpis(step_index, daily_kpi_file)
+
+        # Write weekly KPIs every weekly_interval_steps
+        if step_index % weekly_interval_steps == 0:
+            _append_kpis(step_index, weekly_kpi_file)
+
+    print("Simulation completed.\n")
 
 def main(args):
 
@@ -411,7 +578,7 @@ def main(args):
     # Compare results
     plot_district_kpis(
         {'AdvancedRBC': env_1, 'OptimizedRBC': env_2},
-        base_path=imgs_path
+        base_path='../imgs'
     )
 
 if __name__ == '__main__':

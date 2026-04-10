@@ -13,6 +13,9 @@
 # Images
 **/imgs/*
 
+# KPI logs
+**/kpi_logs/*
+
 # Linear regression result plots
 **/linear_regressor_results/*
 

@@ -38,7 +38,8 @@ DOMAIN_FEATURES: dict[str, list[str]] = {
         "elec_price", "solar_generation",
     ],
     "electrical_storage": [
-        "hour", "solar_generation", "elec_price",
+        "hour", "electrical_storage_soc",
+        "solar_generation", "elec_price", "carbon_intensity",
     ],
 }
 

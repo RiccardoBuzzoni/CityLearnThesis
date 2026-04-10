@@ -9,7 +9,6 @@ import torch
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from CityLearn.citylearn.citylearn import CityLearnEnv
-from CityLearn.citylearn.data import DataSet
 from utils import Config, default_env_config, select_env_config
 
 # Import of AdvancedRBC agent
@@ -23,6 +22,7 @@ from linear_regressor import (
     DOMAIN_FEATURES,
     main as train_linear_models,
 )
+
 
 # ──────────────────────────────────────────────
 # LINEAR REGRESSOR AGENT
@@ -135,6 +135,7 @@ class LinearRegressorAgent:
 
         return actions
 
+
 def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
     '''
     Plot the cooling_device action value, indoor temperature, setpoint and comfort band
@@ -200,6 +201,7 @@ def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
     fig.savefig(save_path, format='png', dpi=300)
     print(f"Plot saved in: {save_path}")
 
+
 def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
     '''
     Plot the dhw_storage action value and DHW storage SoC for both agents.
@@ -253,6 +255,7 @@ def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
     plt.savefig(save_path, format='png', dpi=300)
     print(f"Plot saved in: {save_path}")
 
+
 def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage.png'):
     '''
     Plot the electrical_storage action value and electrical storage SoC for both agents.
@@ -305,6 +308,8 @@ def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, format='png', dpi=300)
     print(f"Plot saved in: {save_path}")
+
+
 
 def evaluate_agent(agent_class, env):
     """
@@ -369,6 +374,56 @@ def evaluate_agent(agent_class, env):
 
     return results
 
+
+def collect_data(agent_class, env):
+    agent = agent_class(env)
+    obs, _ = env.reset()
+    done = False
+    rows = []
+
+    obs_names = env.observation_names[0]     
+    act_names = env.action_names[0]           
+
+    while not done:
+        actions = agent.predict(obs)
+        next_obs, rewards, terminated, truncated, info = env.step(actions)
+
+        def get_obs(name):
+            return obs[0][obs_names.index(name)] if name in obs_names else None
+
+        def get_act(name):
+            return actions[0][act_names.index(name)] if name in act_names else None
+
+        row = {
+            # Observations
+            "hour":                   get_obs("hour"),
+            "indoor_temp":            get_obs("indoor_dry_bulb_temperature"),
+            "cooling_setpoint":       get_obs("indoor_dry_bulb_temperature_cooling_set_point"),
+            "outdoor_temp":           get_obs("outdoor_dry_bulb_temperature"),
+            "outdoor_temp_predicted": get_obs("outdoor_dry_bulb_temperature_predicted_1"),
+            "cooling_demand":         get_obs("cooling_demand"),
+            "elec_price":             get_obs("electricity_pricing"),
+            "carbon_intensity":       get_obs("carbon_intensity"),
+            "solar_generation":       get_obs("solar_generation"),
+            "occupant_count":         get_obs("occupant_count"),
+            "electrical_storage_soc": get_obs("electrical_storage_soc"),
+            "dhw_storage_soc":        get_obs("dhw_storage_soc"),
+            "dhw_demand":             get_obs("dhw_demand"),
+            # Actions
+            "cooling_device":  get_act("cooling_device"),
+            "dhw_storage":      get_act("dhw_storage"),
+            "electrical_storage":  get_act("electrical_storage"),
+            # Reward
+            "reward": rewards[0],
+        }
+
+        rows.append(row)
+        obs = next_obs
+        done = terminated or truncated
+
+    df = pd.DataFrame(rows)
+    return df
+
 def main():
     # Same configuration as main_rbc.py for consistency
     conf = Config()
@@ -423,6 +478,12 @@ def main():
         results_rbc, results_reg,
         save_path='../evaluation_plots/electrical_storage.png'
     )
+
+    # ── CSV export (RBC only, as before) ──────────────────────────────
+    df = collect_data(AdvancedRBC, env_rbc)
+    df.to_csv('datasets/advanced_rbc_dataset.csv', index=False)
+    print(df.shape)
+    print("CSV file was successfully saved")
 
 if __name__ == '__main__':
     main()
