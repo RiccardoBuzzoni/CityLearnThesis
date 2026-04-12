@@ -31,6 +31,10 @@ def collect_data(agent_clas, env):
 
     while not done:
         actions = agent.predict(obs)
+        
+        # Get building reference to access internal SOC values
+        building = env.buildings[0]
+        
         next_observations, rewards, terminated, truncated, info = env.step(actions)
 
         def get_obs(name):
@@ -38,6 +42,12 @@ def collect_data(agent_clas, env):
 
         def get_act(name):
             return actions[0][action_names.index(name)] if name in action_names else None
+        
+        # FIX: Read electrical_storage_soc from the correct time step
+        # After step(), the observation is from the NEW time_step, but the battery SOC 
+        # from the current action is stored in soc[time_step - 1]
+        electrical_storage_soc = building.electrical_storage.soc[building.time_step - 1]
+        dhw_storage_soc = building.dhw_storage.soc[building.time_step - 1]
         
         row = {
             # Observations
@@ -51,8 +61,8 @@ def collect_data(agent_clas, env):
             "carbon_intensity":       get_obs("carbon_intensity"),
             "solar_generation":       get_obs("solar_generation"),
             "occupant_count":         get_obs("occupant_count"),
-            "electrical_storage_soc": get_obs("electrical_storage_soc"),
-            "dhw_storage_soc":        get_obs("dhw_storage_soc"),
+            "electrical_storage_soc": electrical_storage_soc,  # USE FIXED VALUE
+            "dhw_storage_soc":        dhw_storage_soc,  # USE FIXED VALUE
             "dhw_demand":             get_obs("dhw_demand"),
             # Actions
             "cooling_device":  get_act("cooling_device"),
@@ -83,6 +93,11 @@ if __name__ == "__main__":
         schema = default_env_config(args.data) # type: ignore
 
     env = CityLearnEnv(schema=schema, central_agent=True)
+
+    # print the env observation and available actions
+    print("Observation names:", env.observation_names[0])
+    print("Action names:", env.action_names[0])
+    
 
     os.makedirs('datasets', exist_ok=True)
 
