@@ -8,6 +8,10 @@ try:
 except Exception:
     lr = None
 
+try:
+    from main_rbc import AdvancedRBC
+except Exception:
+    AdvancedRBC = None
 
 BG_APP = "#ECECEC"
 BG_CARD = "#FFFFFF"
@@ -23,7 +27,6 @@ GRAY_BUTTON = "#E5E5EA"
 GRAY_HOVER = "#DCDCE1"
 CONSOLE_BG = "#FBFBFD"
 CONSOLE_FG = "#1C1C1E"
-
 
 DEFAULT_STATE = {
     "hour": 14.0,
@@ -80,6 +83,40 @@ PERTURBATION_TARGETS = [
     "dhw_demand",
 ]
 
+RBC_OBSERVATION_NAMES = [
+    "indoor_dry_bulb_temperature",
+    "indoor_dry_bulb_temperature_cooling_set_point",
+    "outdoor_dry_bulb_temperature",
+    "outdoor_dry_bulb_temperature_predicted_1",
+    "cooling_demand",
+    "electricity_pricing",
+    "carbon_intensity",
+    "solar_generation",
+    "occupant_count",
+    "hour",
+    "electrical_storage_soc",
+    "dhw_storage_soc",
+    "dhw_demand",
+]
+
+RBC_ACTION_NAMES = [["cooling_device", "dhw_storage", "electrical_storage"]]
+
+STATE_TO_RBC_MAP = {
+    "indoor_temp": "indoor_dry_bulb_temperature",
+    "cooling_setpoint": "indoor_dry_bulb_temperature_cooling_set_point",
+    "outdoor_temp": "outdoor_dry_bulb_temperature",
+    "outdoor_temp_predicted": "outdoor_dry_bulb_temperature_predicted_1",
+    "cooling_demand": "cooling_demand",
+    "elec_price": "electricity_pricing",
+    "carbon_intensity": "carbon_intensity",
+    "solar_generation": "solar_generation",
+    "occupant_count": "occupant_count",
+    "hour": "hour",
+    "electrical_storage_soc": "electrical_storage_soc",
+    "dhw_storage_soc": "dhw_storage_soc",
+    "dhw_demand": "dhw_demand",
+}
+
 
 def append_text(text_widget, message):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -92,7 +129,6 @@ def append_text(text_widget, message):
 def create_button(parent, text, command, bg, fg="white", active_bg=None, width=16):
     if active_bg is None:
         active_bg = bg
-
     return tk.Button(
         parent,
         text=text,
@@ -120,7 +156,6 @@ def clamp_action(target, value):
 
 def apply_perturbation(state, feature_name, strength):
     new_state = dict(state)
-
     if feature_name == "outdoor_temp":
         new_state[feature_name] += strength * 6.0
     elif feature_name == "solar_generation":
@@ -135,90 +170,54 @@ def apply_perturbation(state, feature_name, strength):
         new_state[feature_name] = max(0.0, min(1.0, new_state[feature_name] + strength * 0.25))
     elif feature_name == "dhw_demand":
         new_state[feature_name] = max(0.0, min(1.0, new_state[feature_name] + strength * 0.25))
-
     return new_state
 
 
-class SimpleRBCPolicy:
+class GUIAdvancedRBCWrapper:
+    def __init__(self, band=2.0):
+        self.band = band
+        self.available = AdvancedRBC is not None
+        self.error = None
+        self.agent = None
+
+        if not self.available:
+            self.error = "Impossibile importare AdvancedRBC da main_rbc.py"
+            return
+
+        try:
+            self.agent = AdvancedRBC.__new__(AdvancedRBC)
+            self.agent.comfort_band = band
+            self.agent.observation_names = [list(RBC_OBSERVATION_NAMES)]
+            self.agent.action_names = [list(RBC_ACTION_NAMES[0])]
+            self.agent.actions = None
+        except Exception as e:
+            self.available = False
+            self.error = f"Errore inizializzazione wrapper RBC: {e}"
+
+    def state_to_observations(self, state):
+        mapped = {rbc_name: 0.0 for rbc_name in RBC_OBSERVATION_NAMES}
+        for gui_name, rbc_name in STATE_TO_RBC_MAP.items():
+            mapped[rbc_name] = float(state.get(gui_name, 0.0))
+        observation_vector = [mapped[name] for name in RBC_OBSERVATION_NAMES]
+        return [observation_vector]
+
     def predict(self, state):
-        return {
-            "cooling_device": self.predict_cooling(state),
-            "dhw_storage": self.predict_dhw(state),
-            "electrical_storage": self.predict_battery(state),
-        }
+        if not self.available or self.agent is None:
+            return {
+                "cooling_device": 0.0,
+                "dhw_storage": 0.0,
+                "electrical_storage": 0.0,
+            }
 
-    def predict_cooling(self, s):
-        if s["occupant_count"] <= 0:
-            return 0.0
+        observations = self.state_to_observations(state)
+        actions_nested = self.agent.predict(observations)
+        raw_actions = actions_nested[0] if actions_nested else [0.0, 0.0, 0.0]
 
-        if s["indoor_temp"] > s["cooling_setpoint"] + 2.0:
-            base = 0.75
-        elif s["cooling_demand"] >= 0.7:
-            base = 0.66
-        elif s["cooling_demand"] >= 0.3:
-            base = 0.4
-        else:
-            base = 0.2
-
-        if s["elec_price"] > 0.03:
-            base -= 0.10
-        if s["solar_generation"] > 0.6:
-            base += 0.10
-        if s["carbon_intensity"] > 0.40:
-            base -= 0.05
-
-        return clamp_action("cooling_device", base)
-
-    def predict_dhw(self, s):
-        soc = s["dhw_storage_soc"]
-        hour = s["hour"]
-        demand = s["dhw_demand"]
-        price = s["elec_price"]
-        solar = s["solar_generation"]
-
-        if 6 <= hour <= 9 or 18 <= hour <= 22:
-            if soc >= 0.7:
-                action = -0.6 if (demand >= 0.6 or price > 0.03) else -0.2
-            elif soc >= 0.4:
-                action = -0.4 if (demand >= 0.6 or price > 0.03) else -0.15
-            else:
-                action = -0.01
-        else:
-            if soc >= 0.7:
-                action = 0.4 if (solar > 0.6 and price < 0.03) else 0.0
-            elif soc >= 0.4:
-                action = 0.65 if (solar > 0.6 and price < 0.03) else 0.15
-            else:
-                action = 0.8 if (solar > 0.6 and price < 0.03) else 0.4
-
-        return clamp_action("dhw_storage", action)
-
-    def predict_battery(self, s):
-        soc = s["electrical_storage_soc"]
-        hour = s["hour"]
-        solar = s["solar_generation"]
-        price = s["elec_price"]
-        peak = 8 <= hour <= 10 or 18 <= hour <= 21
-
-        if peak:
-            if soc >= 0.5:
-                action = -0.5 if solar > 0.6 else -0.3
-            elif soc >= 0.2:
-                action = -0.1
-            else:
-                action = 0.0
-        else:
-            if soc >= 0.5:
-                action = 0.5 if solar > 0.6 else 0.3
-            elif soc >= 0.2:
-                action = 0.7 if solar > 0.6 else 0.5
-            else:
-                action = 0.9 if solar > 0.6 else 0.6
-
-            if price > 0.03:
-                action -= 0.15
-
-        return clamp_action("electrical_storage", action)
+        result = {}
+        for idx, name in enumerate(RBC_ACTION_NAMES[0]):
+            value = raw_actions[idx] if idx < len(raw_actions) else 0.0
+            result[name] = clamp_action(name, value)
+        return result
 
 
 class SimpleNeuralPolicy:
@@ -233,7 +232,6 @@ class SimpleNeuralPolicy:
     def train_if_possible(self):
         if not self.available:
             return False, "linear_regressor.py non importabile"
-
         try:
             self.models, self.feature_order, self.mean, self.std = lr.main()
             self.is_ready = True
@@ -251,33 +249,25 @@ class SimpleNeuralPolicy:
 
         actions = {}
         feature_cols = list(lr.FEATURE_COLS)
-
         for target in lr.TARGET_COLS:
             features = self.feature_order[target]
-
-            full_row = []
-            for col in feature_cols:
-                full_row.append(float(state.get(col, 0.0)))
-
+            full_row = [float(state.get(col, 0.0)) for col in feature_cols]
             norm = []
             for i, value in enumerate(full_row):
-                norm.append((value - float(self.mean[i])) / float(self.std[i]))
-
+                denom = float(self.std[i]) if float(self.std[i]) != 0 else 1.0
+                norm.append((value - float(self.mean[i])) / denom)
             selected = [norm[feature_cols.index(name)] for name in features]
             x = lr.torch.tensor([selected], dtype=lr.torch.float32)
-
             with lr.torch.no_grad():
                 y = self.models[target](x).item()
-
             actions[target] = clamp_action(target, y)
-
         return actions
 
 
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("RBC vs Neural Policy GUI")
+        self.root.title("RBC reale vs Policy Neurale")
         self.root.geometry("1400x820")
         self.root.minsize(1200, 720)
         self.root.configure(bg=BG_APP)
@@ -289,7 +279,7 @@ class App:
         self.base_state = dict(DEFAULT_STATE)
         self.current_state = dict(DEFAULT_STATE)
 
-        self.rbc_policy = SimpleRBCPolicy()
+        self.rbc_policy = GUIAdvancedRBCWrapper()
         self.neural_policy = SimpleNeuralPolicy()
 
         self.policy_mode = tk.StringVar(value="rbc")
@@ -304,6 +294,11 @@ class App:
         self.build_layout()
         self.refresh_view(first_time=True)
 
+        if self.rbc_policy.error:
+            append_text(self.console, self.rbc_policy.error)
+        else:
+            append_text(self.console, "RBC collegato a AdvancedRBC di main_rbc.py")
+
     def build_layout(self):
         self.root.rowconfigure(1, weight=1)
         self.root.columnconfigure(0, weight=1)
@@ -313,7 +308,7 @@ class App:
 
         tk.Label(
             header,
-            text="Confronto RBC vs Policy Neurale",
+            text="Confronto RBC reale vs Policy neurale",
             bg=BG_CARD,
             fg=TEXT,
             font=("Helvetica", 20, "bold"),
@@ -322,7 +317,7 @@ class App:
 
         tk.Label(
             header,
-            text="GUI semplice per testare azioni e robustezza rispetto a perturbazioni",
+            text="La GUI usa AdvancedRBC da main_rbc.py tramite wrapper sulle osservazioni",
             bg=BG_CARD,
             fg=TEXT_MUTED,
             font=("Helvetica", 11),
@@ -344,130 +339,39 @@ class App:
         left = tk.Frame(parent, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        tk.Label(
-            left,
-            text="Controlli",
-            bg=BG_CARD,
-            fg=TEXT,
-            font=("Helvetica", 15, "bold"),
-            anchor="w",
-        ).pack(fill="x", padx=16, pady=(16, 10))
+        tk.Label(left, text="Controlli", bg=BG_CARD, fg=TEXT, font=("Helvetica", 15, "bold"), anchor="w").pack(fill="x", padx=16, pady=(16, 10))
 
         mode_box = tk.LabelFrame(left, text="Controller", bg=BG_CARD, fg=TEXT)
         mode_box.pack(fill="x", padx=16, pady=(0, 12))
 
-        tk.Radiobutton(
-            mode_box,
-            text="RBC",
-            variable=self.policy_mode,
-            value="rbc",
-            command=self.refresh_view,
-            bg=BG_CARD,
-        ).pack(anchor="w", padx=10, pady=(8, 4))
-
-        tk.Radiobutton(
-            mode_box,
-            text="Policy neurale",
-            variable=self.policy_mode,
-            value="neural",
-            command=self.refresh_view,
-            bg=BG_CARD,
-        ).pack(anchor="w", padx=10, pady=(0, 8))
+        tk.Radiobutton(mode_box, text="RBC (main_rbc.AdvancedRBC)", variable=self.policy_mode, value="rbc", command=self.refresh_view, bg=BG_CARD).pack(anchor="w", padx=10, pady=(8, 4))
+        tk.Radiobutton(mode_box, text="Policy neurale", variable=self.policy_mode, value="neural", command=self.refresh_view, bg=BG_CARD).pack(anchor="w", padx=10, pady=(0, 8))
 
         model_box = tk.LabelFrame(left, text="Policy neurale", bg=BG_CARD, fg=TEXT)
         model_box.pack(fill="x", padx=16, pady=(0, 12))
 
-        create_button(
-            model_box,
-            "Train model",
-            self.train_neural_policy,
-            BLUE,
-            active_bg=BLUE_HOVER,
-            width=18,
-        ).pack(anchor="w", padx=10, pady=(10, 8))
+        create_button(model_box, "Train model", self.train_neural_policy, BLUE, active_bg=BLUE_HOVER, width=18).pack(anchor="w", padx=10, pady=(10, 8))
 
-        self.neural_status_label = tk.Label(
-            model_box,
-            text="Stato: non addestrata",
-            bg=BG_CARD,
-            fg=TEXT_MUTED,
-            justify="left",
-            anchor="w",
-        )
+        self.neural_status_label = tk.Label(model_box, text="Stato: non addestrata", bg=BG_CARD, fg=TEXT_MUTED, justify="left", anchor="w")
         self.neural_status_label.pack(fill="x", padx=10, pady=(0, 10))
 
         perturb_box = tk.LabelFrame(left, text="Perturbazioni", bg=BG_CARD, fg=TEXT)
         perturb_box.pack(fill="x", padx=16, pady=(0, 12))
 
-        ttk.Combobox(
-            perturb_box,
-            textvariable=self.perturbation_feature,
-            values=PERTURBATION_TARGETS,
-            state="readonly",
-        ).pack(fill="x", padx=10, pady=(10, 8))
+        ttk.Combobox(perturb_box, textvariable=self.perturbation_feature, values=PERTURBATION_TARGETS, state="readonly").pack(fill="x", padx=10, pady=(10, 8))
+        tk.Scale(perturb_box, from_=-1.0, to=1.0, resolution=0.1, orient="horizontal", variable=self.perturbation_strength, bg=BG_CARD, highlightthickness=0).pack(fill="x", padx=10)
+        tk.Checkbutton(perturb_box, text="Perturbazione casuale a ogni step", variable=self.auto_perturb, bg=BG_CARD).pack(anchor="w", padx=10, pady=(4, 8))
 
-        tk.Scale(
-            perturb_box,
-            from_=-1.0,
-            to=1.0,
-            resolution=0.1,
-            orient="horizontal",
-            variable=self.perturbation_strength,
-            bg=BG_CARD,
-            highlightthickness=0,
-        ).pack(fill="x", padx=10)
-
-        tk.Checkbutton(
-            perturb_box,
-            text="Perturbazione casuale a ogni step",
-            variable=self.auto_perturb,
-            bg=BG_CARD,
-        ).pack(anchor="w", padx=10, pady=(4, 8))
-
-        create_button(
-            perturb_box,
-            "Applica perturbazione",
-            self.apply_current_perturbation,
-            GRAY_BUTTON,
-            fg=TEXT,
-            active_bg=GRAY_HOVER,
-            width=18,
-        ).pack(anchor="w", padx=10, pady=(0, 6))
-
-        create_button(
-            perturb_box,
-            "Reset stato",
-            self.reset_state,
-            GRAY_BUTTON,
-            fg=TEXT,
-            active_bg=GRAY_HOVER,
-            width=18,
-        ).pack(anchor="w", padx=10, pady=(0, 10))
+        create_button(perturb_box, "Applica perturbazione", self.apply_current_perturbation, GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=18).pack(anchor="w", padx=10, pady=(0, 6))
+        create_button(perturb_box, "Reset stato", self.reset_state, GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=18).pack(anchor="w", padx=10, pady=(0, 10))
 
         sim_box = tk.LabelFrame(left, text="Simulazione", bg=BG_CARD, fg=TEXT)
         sim_box.pack(fill="x", padx=16, pady=(0, 12))
 
-        create_button(sim_box, "Step", self.run_single_step, GREEN, active_bg=GREEN, width=12).grid(
-            row=0, column=0, padx=10, pady=10, sticky="w"
-        )
-
-        create_button(sim_box, "Start", self.start_simulation, BLUE, active_bg=BLUE_HOVER, width=12).grid(
-            row=0, column=1, padx=0, pady=10, sticky="w"
-        )
-
-        create_button(sim_box, "Stop", self.stop_simulation, RED, active_bg=RED_HOVER, width=12).grid(
-            row=1, column=0, padx=10, pady=(0, 10), sticky="w"
-        )
-
-        create_button(
-            sim_box,
-            "Confronta",
-            self.compare_policies,
-            GRAY_BUTTON,
-            fg=TEXT,
-            active_bg=GRAY_HOVER,
-            width=12,
-        ).grid(row=1, column=1, padx=0, pady=(0, 10), sticky="w")
+        create_button(sim_box, "Step", self.run_single_step, GREEN, active_bg=GREEN, width=12).grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        create_button(sim_box, "Start", self.start_simulation, BLUE, active_bg=BLUE_HOVER, width=12).grid(row=0, column=1, padx=0, pady=10, sticky="w")
+        create_button(sim_box, "Stop", self.stop_simulation, RED, active_bg=RED_HOVER, width=12).grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
+        create_button(sim_box, "Confronta", self.compare_policies, GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=12).grid(row=1, column=1, padx=0, pady=(0, 10), sticky="w")
 
         inputs_box = tk.LabelFrame(left, text="Stato osservato", bg=BG_CARD, fg=TEXT)
         inputs_box.pack(fill="both", expand=True, padx=16, pady=(0, 16))
@@ -475,20 +379,10 @@ class App:
         for name, value in DEFAULT_STATE.items():
             row = tk.Frame(inputs_box, bg=BG_CARD)
             row.pack(fill="x", padx=10, pady=4)
-
-            tk.Label(
-                row,
-                text=name,
-                width=20,
-                anchor="w",
-                bg=BG_CARD,
-                fg=TEXT,
-            ).pack(side="left")
-
+            tk.Label(row, text=name, width=20, anchor="w", bg=BG_CARD, fg=TEXT).pack(side="left")
             var = tk.StringVar(value=str(value))
             entry = tk.Entry(row, textvariable=var, relief="solid", bd=1)
             entry.pack(side="right", fill="x", expand=True)
-
             self.state_vars[name] = var
 
     def build_center_panel(self, parent):
@@ -497,14 +391,7 @@ class App:
         center.rowconfigure(2, weight=1)
         center.columnconfigure(0, weight=1)
 
-        tk.Label(
-            center,
-            text="Azioni correnti",
-            bg=BG_CARD,
-            fg=TEXT,
-            font=("Helvetica", 15, "bold"),
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        tk.Label(center, text="Azioni correnti", bg=BG_CARD, fg=TEXT, font=("Helvetica", 15, "bold"), anchor="w").grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
 
         cards = tk.Frame(center, bg=BG_CARD)
         cards.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
@@ -515,22 +402,8 @@ class App:
         for i, device in enumerate(["cooling_device", "dhw_storage", "electrical_storage"]):
             card = tk.Frame(cards, bg="#F8F8FA", highlightbackground=BORDER, highlightthickness=1)
             card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 8, 0))
-
-            tk.Label(
-                card,
-                text=device,
-                bg="#F8F8FA",
-                fg=TEXT_MUTED,
-                font=("Helvetica", 10),
-            ).pack(anchor="w", padx=12, pady=(10, 4))
-
-            value_label = tk.Label(
-                card,
-                text="0.000",
-                bg="#F8F8FA",
-                fg=TEXT,
-                font=("Helvetica", 18, "bold"),
-            )
+            tk.Label(card, text=device, bg="#F8F8FA", fg=TEXT_MUTED, font=("Helvetica", 10)).pack(anchor="w", padx=12, pady=(10, 4))
+            value_label = tk.Label(card, text="0.000", bg="#F8F8FA", fg=TEXT, font=("Helvetica", 18, "bold"))
             value_label.pack(anchor="w", padx=12, pady=(0, 10))
             self.metric_labels[device] = value_label
 
@@ -540,24 +413,8 @@ class App:
         for device in ["cooling_device", "dhw_storage", "electrical_storage"]:
             section = tk.Frame(details_box, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
             section.pack(fill="x", padx=10, pady=8)
-
-            tk.Label(
-                section,
-                text=device,
-                bg=BG_CARD,
-                fg=TEXT,
-                font=("Helvetica", 12, "bold"),
-            ).pack(anchor="w", padx=10, pady=(8, 4))
-
-            detail = tk.Label(
-                section,
-                text="",
-                justify="left",
-                anchor="w",
-                bg=BG_CARD,
-                fg=TEXT_MUTED,
-                font=("Helvetica", 10),
-            )
+            tk.Label(section, text=device, bg=BG_CARD, fg=TEXT, font=("Helvetica", 12, "bold")).pack(anchor="w", padx=10, pady=(8, 4))
+            detail = tk.Label(section, text="", justify="left", anchor="w", bg=BG_CARD, fg=TEXT_MUTED, font=("Helvetica", 10))
             detail.pack(fill="x", padx=10, pady=(0, 8))
             self.detail_labels[device] = detail
 
@@ -567,25 +424,9 @@ class App:
         right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
 
-        tk.Label(
-            right,
-            text="Console e confronto",
-            bg=BG_CARD,
-            fg=TEXT,
-            font=("Helvetica", 15, "bold"),
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        tk.Label(right, text="Console e confronto", bg=BG_CARD, fg=TEXT, font=("Helvetica", 15, "bold"), anchor="w").grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
 
-        self.console = tk.Text(
-            right,
-            wrap="word",
-            state="disabled",
-            bg=CONSOLE_BG,
-            fg=CONSOLE_FG,
-            relief="flat",
-            bd=0,
-            font=("Menlo", 11),
-        )
+        self.console = tk.Text(right, wrap="word", state="disabled", bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", bd=0, font=("Menlo", 11))
         self.console.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
 
         append_text(self.console, "GUI pronta")
@@ -600,7 +441,6 @@ class App:
             except ValueError:
                 state[name] = DEFAULT_STATE[name]
                 var.set(str(DEFAULT_STATE[name]))
-
         self.current_state = state
         return state
 
@@ -611,7 +451,7 @@ class App:
     def get_active_policy(self):
         if self.policy_mode.get() == "neural":
             return self.neural_policy, "Policy neurale"
-        return self.rbc_policy, "RBC"
+        return self.rbc_policy, "RBC reale"
 
     def compute_actions(self, state):
         policy, _ = self.get_active_policy()
@@ -632,7 +472,7 @@ class App:
             self.detail_labels[device].config(text="\n".join(rows))
 
         if not first_time:
-            controller = "policy neurale" if self.policy_mode.get() == "neural" else "RBC"
+            controller = "policy neurale" if self.policy_mode.get() == "neural" else "RBC reale"
             append_text(self.console, f"Vista aggiornata con {controller}")
 
     def train_neural_policy(self):
@@ -646,15 +486,10 @@ class App:
         state = self.read_state_from_inputs()
         feature = self.perturbation_feature.get()
         strength = self.perturbation_strength.get()
-
         new_state = apply_perturbation(state, feature, strength)
         self.current_state = new_state
         self.write_state_to_inputs(new_state)
-
-        append_text(
-            self.console,
-            f"Perturbazione applicata su {feature} con intensità {strength:+.1f}"
-        )
+        append_text(self.console, f"Perturbazione applicata su {feature} con intensità {strength:+.1f}")
         self.refresh_view()
 
     def reset_state(self):
@@ -679,21 +514,14 @@ class App:
         self.step_count += 1
         actions = self.compute_actions(self.current_state)
         _, policy_name = self.get_active_policy()
-
         append_text(self.console, f"Step {self.step_count} | controller: {policy_name}")
-        append_text(
-            self.console,
-            f"Azioni -> cooling: {actions['cooling_device']:.3f}, "
-            f"dhw: {actions['dhw_storage']:.3f}, "
-            f"battery: {actions['electrical_storage']:.3f}"
-        )
+        append_text(self.console, f"Azioni -> cooling: {actions['cooling_device']:.3f}, dhw: {actions['dhw_storage']:.3f}, battery: {actions['electrical_storage']:.3f}")
         self.refresh_view()
 
     def start_simulation(self):
         if self.simulation_running:
             append_text(self.console, "Simulazione già in esecuzione")
             return
-
         self.simulation_running = True
         self.stop_requested = False
         append_text(self.console, "Simulazione avviata")
@@ -704,7 +532,6 @@ class App:
             self.simulation_running = False
             append_text(self.console, "Simulazione fermata")
             return
-
         self.run_single_step()
         self.root.after(1200, self.schedule_step)
 
@@ -716,16 +543,10 @@ class App:
         state = self.read_state_from_inputs()
         rbc_actions = self.rbc_policy.predict(state)
         neural_actions = self.neural_policy.predict(state)
-
-        append_text(self.console, "Confronto RBC vs policy neurale")
+        append_text(self.console, "Confronto RBC reale vs policy neurale")
         for device in ["cooling_device", "dhw_storage", "electrical_storage"]:
             diff = abs(rbc_actions[device] - neural_actions[device])
-            append_text(
-                self.console,
-                f"{device}: RBC={rbc_actions[device]:.3f} | "
-                f"Neural={neural_actions[device]:.3f} | "
-                f"|diff|={diff:.3f}"
-            )
+            append_text(self.console, f"{device}: RBC={rbc_actions[device]:.3f} | Neural={neural_actions[device]:.3f} | |diff|={diff:.3f}")
 
 
 def main():
