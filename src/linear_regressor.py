@@ -34,12 +34,10 @@ DOMAIN_FEATURES: dict[str, list[str]] = {
         "solar_generation", "occupant_count",
     ],
     "dhw_storage": [
-        "hour", "dhw_storage_soc", "dhw_demand",
-        "elec_price", "solar_generation",
+        "hour", "elec_price", "solar_generation",
     ],
     "electrical_storage": [
-        "hour", "electrical_storage_soc",
-        "solar_generation", "elec_price", "carbon_intensity",
+        "hour", "solar_generation", 
     ],
 }
 
@@ -96,12 +94,21 @@ class LinearRegressor(nn.Module):
     input_dim : int
         Number of input features (varies per target based on DOMAIN_FEATURES).
     """
-    def __init__(self, input_dim: int):
+    def __init__(self, input_dim: int, is_storage: bool=False):
         super().__init__()
-        self.linear = nn.Linear(input_dim, 1)
+        if is_storage:
+            # MLP for dhw_storage and electrical_storage to account for weighted loss
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, 32),
+                nn.ReLU(),
+                nn.Linear(32, 1)
+            )
+        else:
+            # Pure linear regressor for cooling_device to maintain stability
+            self.net = nn.Linear(input_dim, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x)
+        return self.net(x)
 
 
 # ──────────────────────────────────────────────
@@ -112,7 +119,8 @@ def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
     criterion: nn.Module,
-    optimizer: torch.optim.Optimizer
+    optimizer: torch.optim.Optimizer,
+    apply_weights: bool=False
 ) -> tuple[float, float]:
     """
     Run one training epoch.
@@ -131,13 +139,23 @@ def train_one_epoch(
     for X_batch, y_batch in loader:
         optimizer.zero_grad()
         preds = model(X_batch)
-        loss = criterion(preds, y_batch)
+        loss_pixelwise = (preds - y_batch)**2
+
+        # Weighted loss only for dhw_storage and electrical_storage.
+        if apply_weights:
+            weights = torch.where(y_batch < -0.1, 8.0, 1.0)
+            loss = (loss_pixelwise * weights).mean()
+        else:
+            loss = loss_pixelwise.mean()
+
         loss.backward()
         optimizer.step()
+
         batch_size = X_batch.size(0)
         total_mse += loss.item() * batch_size
         total_mae += torch.mean(torch.abs(preds.detach() - y_batch)).item() * batch_size
         n_samples += batch_size
+
     return total_mse / n_samples, total_mae / n_samples
 
 
@@ -283,13 +301,15 @@ def main():
         y_train = Y_train[:, idx]
         y_eval = Y_eval[:,  idx]
 
+        is_storage = target in ["dhw_storage", "electrical_storage"]
+
         train_dataset = RBCDataset(X_train_norm, y_train)
         eval_dataset = RBCDataset(X_eval_norm,  y_eval)
 
         train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
         eval_loader = DataLoader(eval_dataset,  batch_size=BATCH_SIZE, shuffle=False)
 
-        model = LinearRegressor(input_dim=len(domain_feats))
+        model = LinearRegressor(input_dim=len(domain_feats), is_storage=is_storage)
         criterion = nn.MSELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 

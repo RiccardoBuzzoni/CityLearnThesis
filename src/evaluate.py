@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from collect_rbc_data import collect_data
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -430,12 +429,6 @@ def main():
         results_rbc, results_reg,
         save_path='../evaluation_plots/electrical_storage.png'
     )
-
-    # ── CSV export (RBC only, as before) ──────────────────────────────
-    df = collect_data(AdvancedRBC, env_rbc)
-    df.to_csv('datasets/advanced_rbc_dataset.csv', index=False)
-    print(df.shape)
-    print("CSV file was successfully saved")
 
 if __name__ == '__main__':
     main()

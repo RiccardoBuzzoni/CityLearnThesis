@@ -25,6 +25,9 @@
 # Evaluation plots
 **/evaluation_plots/*
 
+# Datasets
+**/datasets/*
+
 # VSCode settings
 **/.vscode/*
 
