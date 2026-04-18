@@ -1,4 +1,11 @@
+import sys, os
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import random
+import io
+import contextlib
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
@@ -10,79 +17,59 @@ except Exception:
 
 try:
     from main_rbc import AdvancedRBC
-except Exception:
+    from CityLearn.citylearn.citylearn import CityLearnEnv
+    from utils import default_env_config, Config
+    CITYLEARN_AVAILABLE = True
+except Exception as e:
+    CITYLEARN_AVAILABLE = False
+    _CITYLEARN_ERROR = str(e)
     AdvancedRBC = None
+    CityLearnEnv = None
 
-BG_APP = "#ECECEC"
-BG_CARD = "#FFFFFF"
-BORDER = "#D8D8DC"
-TEXT = "#1C1C1E"
-TEXT_MUTED = "#6E6E73"
-BLUE = "#007AFF"
-BLUE_HOVER = "#0062CC"
-RED = "#FF3B30"
-RED_HOVER = "#D9362B"
-GREEN = "#34C759"
-GRAY_BUTTON = "#E5E5EA"
-GRAY_HOVER = "#DCDCE1"
-CONSOLE_BG = "#FBFBFD"
-CONSOLE_FG = "#1C1C1E"
+# ─────────────────────────────────────────────
+# COLORI
+# ─────────────────────────────────────────────
+BG_APP       = "#ECECEC"
+BG_CARD      = "#FFFFFF"
+BG_CARD2     = "#F8F8FA"
+BORDER       = "#D8D8DC"
+TEXT         = "#1C1C1E"
+TEXT_MUTED   = "#6E6E73"
+BLUE         = "#007AFF"
+BLUE_HOVER   = "#0062CC"
+BLUE_LIGHT   = "#E8F2FF"
+RED          = "#FF3B30"
+RED_HOVER    = "#D9362B"
+GREEN        = "#34C759"
+ORANGE       = "#FF9500"
+ORANGE_LIGHT = "#FFF4E0"
+GRAY_BUTTON  = "#E5E5EA"
+GRAY_HOVER   = "#DCDCE1"
+CONSOLE_BG   = "#FBFBFD"
+CONSOLE_FG   = "#1C1C1E"
 
-DEFAULT_STATE = {
-    "hour": 14.0,
-    "indoor_temp": 27.0,
-    "cooling_setpoint": 24.0,
-    "outdoor_temp": 31.0,
-    "outdoor_temp_predicted": 30.0,
-    "cooling_demand": 0.65,
-    "elec_price": 0.028,
-    "carbon_intensity": 0.35,
-    "solar_generation": 0.50,
-    "occupant_count": 2.0,
-    "electrical_storage_soc": 0.45,
-    "dhw_storage_soc": 0.55,
-    "dhw_demand": 0.40,
-}
+# ─────────────────────────────────────────────
+# FONT
+# ─────────────────────────────────────────────
+F_TITLE    = ("Helvetica", 22, "bold")
+F_SUBTITLE = ("Helvetica", 12)
+F_SECTION  = ("Helvetica", 15, "bold")
+F_LABEL_H  = ("Helvetica", 11, "bold")
+F_BODY     = ("Helvetica", 12)
+F_BODY_B   = ("Helvetica", 12, "bold")
+F_RADIO    = ("Helvetica", 12)
+F_BTN      = ("Helvetica", 11, "bold")
+F_TABLE_H  = ("Helvetica", 12, "bold")
+F_TABLE_V  = ("Helvetica", 24, "bold")
+F_DIFF     = ("Helvetica", 18, "bold")
+F_DEVICE   = ("Helvetica", 12, "bold")
+F_OBS_NAME = ("Helvetica", 11)
+F_OBS_VAL  = ("Helvetica", 11, "bold")
+F_CONSOLE  = ("Courier", 11)
 
-DEVICE_FEATURES = {
-    "cooling_device": [
-        "hour",
-        "indoor_temp",
-        "cooling_setpoint",
-        "outdoor_temp",
-        "outdoor_temp_predicted",
-        "cooling_demand",
-        "elec_price",
-        "carbon_intensity",
-        "solar_generation",
-        "occupant_count",
-    ],
-    "dhw_storage": [
-        "hour",
-        "dhw_storage_soc",
-        "dhw_demand",
-        "elec_price",
-        "solar_generation",
-    ],
-    "electrical_storage": [
-        "hour",
-        "electrical_storage_soc",
-        "solar_generation",
-        "elec_price",
-        "carbon_intensity",
-    ],
-}
-
-PERTURBATION_TARGETS = [
-    "outdoor_temp",
-    "solar_generation",
-    "elec_price",
-    "carbon_intensity",
-    "occupant_count",
-    "cooling_demand",
-    "dhw_demand",
-]
-
+# ─────────────────────────────────────────────
+# COSTANTI
+# ─────────────────────────────────────────────
 RBC_OBSERVATION_NAMES = [
     "indoor_dry_bulb_temperature",
     "indoor_dry_bulb_temperature_cooling_set_point",
@@ -99,51 +86,76 @@ RBC_OBSERVATION_NAMES = [
     "dhw_demand",
 ]
 
-RBC_ACTION_NAMES = [["cooling_device", "dhw_storage", "electrical_storage"]]
+RBC_ACTION_NAMES = ["cooling_device", "dhw_storage", "electrical_storage"]
 
-STATE_TO_RBC_MAP = {
-    "indoor_temp": "indoor_dry_bulb_temperature",
-    "cooling_setpoint": "indoor_dry_bulb_temperature_cooling_set_point",
-    "outdoor_temp": "outdoor_dry_bulb_temperature",
-    "outdoor_temp_predicted": "outdoor_dry_bulb_temperature_predicted_1",
-    "cooling_demand": "cooling_demand",
-    "elec_price": "electricity_pricing",
-    "carbon_intensity": "carbon_intensity",
-    "solar_generation": "solar_generation",
-    "occupant_count": "occupant_count",
-    "hour": "hour",
-    "electrical_storage_soc": "electrical_storage_soc",
-    "dhw_storage_soc": "dhw_storage_soc",
-    "dhw_demand": "dhw_demand",
+PERTURBATION_TARGETS = [
+    "outdoor_dry_bulb_temperature",
+    "solar_generation",
+    "electricity_pricing",
+    "carbon_intensity",
+    "occupant_count",
+    "cooling_demand",
+    "dhw_demand",
+    "indoor_dry_bulb_temperature",
+    "electrical_storage_soc",
+    "dhw_storage_soc",
+]
+
+CITYLEARN_TO_LR = {
+    "indoor_dry_bulb_temperature":                   "indoor_temp",
+    "indoor_dry_bulb_temperature_cooling_set_point": "cooling_setpoint",
+    "outdoor_dry_bulb_temperature":                  "outdoor_temp",
+    "outdoor_dry_bulb_temperature_predicted_1":      "outdoor_temp_predicted",
+    "cooling_demand":                                "cooling_demand",
+    "electricity_pricing":                           "elec_price",
+    "carbon_intensity":                              "carbon_intensity",
+    "solar_generation":                              "solar_generation",
+    "occupant_count":                                "occupant_count",
+    "hour":                                          "hour",
+    "electrical_storage_soc":                        "electrical_storage_soc",
+    "dhw_storage_soc":                               "dhw_storage_soc",
+    "dhw_demand":                                    "dhw_demand",
 }
 
-
+# ─────────────────────────────────────────────
+# UTILITY
+# ─────────────────────────────────────────────
 def append_text(text_widget, message):
     timestamp = datetime.now().strftime("%H:%M:%S")
     text_widget.config(state="normal")
     text_widget.insert("end", f"[{timestamp}] {message}\n")
     text_widget.see("end")
     text_widget.config(state="disabled")
+    text_widget.update_idletasks()
 
 
-def create_button(parent, text, command, bg, fg="white", active_bg=None, width=16):
+class TextRedirector(io.StringIO):
+    def __init__(self, text_widget):
+        super().__init__()
+        self.text_widget = text_widget
+        self._buffer = ""
+
+    def write(self, text):
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line.strip():
+                append_text(self.text_widget, line.rstrip())
+
+    def flush(self):
+        if self._buffer.strip():
+            append_text(self.text_widget, self._buffer.rstrip())
+        self._buffer = ""
+
+
+def create_button(parent, text, command, bg, fg="white", active_bg=None, width=14):
     if active_bg is None:
         active_bg = bg
     return tk.Button(
-        parent,
-        text=text,
-        command=command,
-        bg=bg,
-        fg=fg,
-        activebackground=active_bg,
-        activeforeground=fg,
-        font=("Helvetica", 10, "bold"),
-        relief="flat",
-        bd=0,
-        padx=12,
-        pady=10,
-        width=width,
-        cursor="hand2",
+        parent, text=text, command=command,
+        bg=bg, fg=fg, activebackground=active_bg, activeforeground=fg,
+        font=F_BTN, relief="flat", bd=0,
+        padx=10, pady=10, width=width, cursor="hand2",
     )
 
 
@@ -154,174 +166,353 @@ def clamp_action(target, value):
     return max(-1.0, min(1.0, value))
 
 
-def apply_perturbation(state, feature_name, strength):
-    new_state = dict(state)
-    if feature_name == "outdoor_temp":
-        new_state[feature_name] += strength * 6.0
-    elif feature_name == "solar_generation":
-        new_state[feature_name] = max(0.0, min(1.0, new_state[feature_name] + strength * 0.35))
-    elif feature_name == "elec_price":
-        new_state[feature_name] = max(0.0, new_state[feature_name] + strength * 0.015)
-    elif feature_name == "carbon_intensity":
-        new_state[feature_name] = max(0.0, min(1.0, new_state[feature_name] + strength * 0.20))
-    elif feature_name == "occupant_count":
-        new_state[feature_name] = max(0.0, round(new_state[feature_name] + strength * 2.0))
-    elif feature_name == "cooling_demand":
-        new_state[feature_name] = max(0.0, min(1.0, new_state[feature_name] + strength * 0.25))
-    elif feature_name == "dhw_demand":
-        new_state[feature_name] = max(0.0, min(1.0, new_state[feature_name] + strength * 0.25))
-    return new_state
+def obs_vector_to_dict(obs_vector, obs_names):
+    return {name: obs_vector[i] for i, name in enumerate(obs_names)}
 
 
-class GUIAdvancedRBCWrapper:
-    def __init__(self, band=2.0):
-        self.band = band
-        self.available = AdvancedRBC is not None
-        self.error = None
-        self.agent = None
-
-        if not self.available:
-            self.error = "Impossibile importare AdvancedRBC da main_rbc.py"
-            return
-
-        try:
-            self.agent = AdvancedRBC.__new__(AdvancedRBC)
-            self.agent.comfort_band = band
-            self.agent.observation_names = [list(RBC_OBSERVATION_NAMES)]
-            self.agent.action_names = [list(RBC_ACTION_NAMES[0])]
-            self.agent.actions = None
-        except Exception as e:
-            self.available = False
-            self.error = f"Errore inizializzazione wrapper RBC: {e}"
-
-    def state_to_observations(self, state):
-        mapped = {rbc_name: 0.0 for rbc_name in RBC_OBSERVATION_NAMES}
-        for gui_name, rbc_name in STATE_TO_RBC_MAP.items():
-            mapped[rbc_name] = float(state.get(gui_name, 0.0))
-        observation_vector = [mapped[name] for name in RBC_OBSERVATION_NAMES]
-        return [observation_vector]
-
-    def predict(self, state):
-        if not self.available or self.agent is None:
-            return {
-                "cooling_device": 0.0,
-                "dhw_storage": 0.0,
-                "electrical_storage": 0.0,
-            }
-
-        observations = self.state_to_observations(state)
-        actions_nested = self.agent.predict(observations)
-        raw_actions = actions_nested[0] if actions_nested else [0.0, 0.0, 0.0]
-
-        result = {}
-        for idx, name in enumerate(RBC_ACTION_NAMES[0]):
-            value = raw_actions[idx] if idx < len(raw_actions) else 0.0
-            result[name] = clamp_action(name, value)
-        return result
+def diff_color(diff):
+    if diff < 0.05:
+        return GREEN
+    elif diff < 0.20:
+        return ORANGE
+    else:
+        return RED
 
 
-class SimpleNeuralPolicy:
+# ─────────────────────────────────────────────
+# POLICY NEURALE
+# ─────────────────────────────────────────────
+class LinearRegressorPolicy:
     def __init__(self):
         self.available = lr is not None
-        self.models = {}
-        self.feature_order = {}
-        self.mean = None
-        self.std = None
-        self.is_ready = False
+        self.models    = {}
+        self.features  = {}
+        self.mean      = None
+        self.std       = None
+        self.is_ready  = False
 
-    def train_if_possible(self):
+    def train(self):
         if not self.available:
             return False, "linear_regressor.py non importabile"
         try:
-            self.models, self.feature_order, self.mean, self.std = lr.main()
+            self.models, self.features, self.mean, self.std = lr.main()
             self.is_ready = True
-            return True, "Policy neurale addestrata con successo"
+            return True, "LinearRegressorPolicy pronta"
         except Exception as e:
-            return False, f"Errore training policy neurale: {e}"
+            return False, f"Errore training: {e}"
 
-    def predict(self, state):
+    def predict(self, obs_dict: dict) -> dict:
         if not self.is_ready:
-            return {
-                "cooling_device": 0.0,
-                "dhw_storage": 0.0,
-                "electrical_storage": 0.0,
-            }
+            return {d: 0.0 for d in RBC_ACTION_NAMES}
+
+        lr_obs = {
+            lr_name: float(obs_dict.get(cl_name, 0.0))
+            for cl_name, lr_name in CITYLEARN_TO_LR.items()
+        }
+
+        feature_cols = list(lr.FEATURE_COLS)
+        full_row     = [lr_obs.get(col, 0.0) for col in feature_cols]
+
+        norm_row = [
+            (v - float(self.mean[i])) / (float(self.std[i]) if float(self.std[i]) != 0 else 1.0)
+            for i, v in enumerate(full_row)
+        ]
 
         actions = {}
-        feature_cols = list(lr.FEATURE_COLS)
         for target in lr.TARGET_COLS:
-            features = self.feature_order[target]
-            full_row = [float(state.get(col, 0.0)) for col in feature_cols]
-            norm = []
-            for i, value in enumerate(full_row):
-                denom = float(self.std[i]) if float(self.std[i]) != 0 else 1.0
-                norm.append((value - float(self.mean[i])) / denom)
-            selected = [norm[feature_cols.index(name)] for name in features]
+            selected = [norm_row[feature_cols.index(f)] for f in self.features[target]]
             x = lr.torch.tensor([selected], dtype=lr.torch.float32)
             with lr.torch.no_grad():
                 y = self.models[target](x).item()
             actions[target] = clamp_action(target, y)
+
         return actions
 
 
+# ─────────────────────────────────────────────
+# APP
+# ─────────────────────────────────────────────
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("RBC reale vs Policy Neurale")
-        self.root.geometry("1400x820")
-        self.root.minsize(1200, 720)
+        self.root.title("RBC vs Policy Neurale - Robustezza a Perturbazioni")
+        self.root.geometry("1900x980")
+        self.root.minsize(1600, 820)
         self.root.configure(bg=BG_APP)
 
-        self.state_vars = {}
-        self.metric_labels = {}
-        self.detail_labels = {}
+        self.clean_labels     = {}
+        self.perturbed_labels = {}
+        self.diff_labels      = {}
+        self.obs_labels       = {}
 
-        self.base_state = dict(DEFAULT_STATE)
-        self.current_state = dict(DEFAULT_STATE)
+        self.env                  = None
+        self.rbc_agent            = None
+        self.current_observations = None
+        self.current_obs_dict     = {}
 
-        self.rbc_policy = GUIAdvancedRBCWrapper()
-        self.neural_policy = SimpleNeuralPolicy()
+        self.neural_policy = LinearRegressorPolicy()
 
-        self.policy_mode = tk.StringVar(value="rbc")
-        self.perturbation_feature = tk.StringVar(value="outdoor_temp")
-        self.perturbation_strength = tk.DoubleVar(value=0.0)
-        self.auto_perturb = tk.BooleanVar(value=False)
+        self.policy_mode      = tk.StringVar(value="rbc")
+        self.perturb_enabled  = tk.BooleanVar(value=False)
+        self.perturb_feature  = tk.StringVar(value="outdoor_dry_bulb_temperature")
+        self.perturb_strength = tk.DoubleVar(value=0.0)
 
         self.simulation_running = False
-        self.stop_requested = False
-        self.step_count = 0
+        self.stop_requested     = False
+        self.step_count         = 0
+
+        self._last_clean     = {d: 0.0 for d in RBC_ACTION_NAMES}
+        self._last_perturbed = {d: 0.0 for d in RBC_ACTION_NAMES}
 
         self.build_layout()
-        self.refresh_view(first_time=True)
+        self._init_environment()
 
-        if self.rbc_policy.error:
-            append_text(self.console, self.rbc_policy.error)
+    # ─────────────────────────────────────────
+    # AMBIENTE
+    # ─────────────────────────────────────────
+    def _init_environment(self):
+        if not CITYLEARN_AVAILABLE:
+            append_text(self.console, f"ERRORE CityLearn: {_CITYLEARN_ERROR}")
+            return
+        try:
+            append_text(self.console, "Inizializzazione ambiente CityLearn...")
+            conf   = Config()
+            schema = default_env_config(conf.args.data)
+            self.env       = CityLearnEnv(schema=schema, central_agent=True)
+            self.rbc_agent = AdvancedRBC(self.env)
+            obs, _         = self.env.reset()
+            self._store_obs(obs)
+            self.step_count = 0
+            append_text(self.console, "Ambiente CityLearn pronto.")
+            append_text(self.console, f"Episodio: {self.env.time_steps - 1} step totali")
+            self._update_obs_display()
+            self._refresh_action_display()
+        except Exception as e:
+            append_text(self.console, f"Errore init CityLearn: {e}")
+
+    def _reset_environment(self):
+        if self.env is None:
+            self._init_environment()
+            return
+        try:
+            obs, _ = self.env.reset()
+            self._store_obs(obs)
+            self.step_count = 0
+            append_text(self.console, "Ambiente resettato.")
+            self._update_obs_display()
+            self._refresh_action_display()
+        except Exception as e:
+            append_text(self.console, f"Errore reset: {e}")
+
+    def _store_obs(self, obs):
+        self.current_observations = obs
+        obs_names = self.rbc_agent.observation_names[0]
+        self.current_obs_dict = obs_vector_to_dict(obs[0], obs_names)
+
+    def _update_obs_display(self):
+        for name, label in self.obs_labels.items():
+            val = self.current_obs_dict.get(name, 0.0)
+            label.config(text=f"{val:.3f}")
+
+    # ─────────────────────────────────────────
+    # PREDIZIONE
+    # ─────────────────────────────────────────
+    def _predict_from_obs(self, obs_dict: dict) -> dict:
+        if self.policy_mode.get() == "rbc":
+            if self.rbc_agent is None or self.current_observations is None:
+                return {d: 0.0 for d in RBC_ACTION_NAMES}
+            obs_names  = self.rbc_agent.observation_names[0]
+            obs_vector = [obs_dict.get(name, 0.0) for name in obs_names]
+            raw  = self.rbc_agent.predict([obs_vector])
+            acts = raw[0] if raw else [0.0, 0.0, 0.0]
+            return {name: clamp_action(name, acts[i])
+                    for i, name in enumerate(RBC_ACTION_NAMES)}
         else:
-            append_text(self.console, "RBC collegato a AdvancedRBC di main_rbc.py")
+            return self.neural_policy.predict(obs_dict)
 
+    def _compute_both(self):
+        obs_clean     = dict(self.current_obs_dict)
+        obs_perturbed = dict(self.current_obs_dict)
+        if self.perturb_enabled.get():
+            feature  = self.perturb_feature.get()
+            strength = self.perturb_strength.get()
+            obs_perturbed[feature] = obs_perturbed.get(feature, 0.0) + strength
+        return self._predict_from_obs(obs_clean), self._predict_from_obs(obs_perturbed)
+
+    def _refresh_action_display(self):
+        clean, perturbed = self._compute_both()
+        self._last_clean     = clean
+        self._last_perturbed = perturbed
+        for device in RBC_ACTION_NAMES:
+            c = clean[device]
+            p = perturbed[device]
+            d = abs(p - c)
+            self.clean_labels[device].config(text=f"{c:.3f}")
+            self.perturbed_labels[device].config(text=f"{p:.3f}")
+            self.diff_labels[device].config(text=f"D {d:.3f}", fg=diff_color(d))
+
+    # ─────────────────────────────────────────
+    # SIMULAZIONE
+    # ─────────────────────────────────────────
+    def run_single_step(self):
+        if self.env is None or self.current_observations is None:
+            append_text(self.console, "Ambiente non inizializzato.")
+            return
+
+        clean, perturbed = self._compute_both()
+        self._last_clean     = clean
+        self._last_perturbed = perturbed
+
+        actions_for_env = perturbed if self.perturb_enabled.get() else clean
+        env_actions     = [[actions_for_env[d] for d in RBC_ACTION_NAMES]]
+
+        try:
+            obs, reward, terminated, truncated, _ = self.env.step(env_actions)
+            self._store_obs(obs)
+            self.step_count += 1
+
+            ctrl = "Policy neurale" if self.policy_mode.get() == "neural" else "RBC"
+            append_text(self.console,
+                        f"Step {self.step_count} | {ctrl} | reward: {reward[0]:.4f}")
+
+            for device in RBC_ACTION_NAMES:
+                d = abs(perturbed[device] - clean[device])
+                if d > 0.05:
+                    append_text(
+                        self.console,
+                        f"  ! {device}: pulito={clean[device]:.3f}  "
+                        f"perturbato={perturbed[device]:.3f}  D={d:.3f}"
+                    )
+
+            self._update_obs_display()
+            self._refresh_action_display()
+
+            if terminated or truncated:
+                append_text(self.console, "Episodio terminato.")
+                self.stop_requested = True
+
+        except Exception as e:
+            append_text(self.console, f"Errore step: {e}")
+            self.stop_requested = True
+
+    def start_simulation(self):
+        if self.simulation_running:
+            append_text(self.console, "Simulazione gia in esecuzione")
+            return
+        if self.env is None:
+            append_text(self.console, "Ambiente non inizializzato")
+            return
+        if self.policy_mode.get() == "neural" and not self.neural_policy.is_ready:
+            append_text(self.console, "Policy neurale non addestrata. Premi Train model prima.")
+            return
+        self.simulation_running = True
+        self.stop_requested     = False
+        ctrl = "Policy neurale" if self.policy_mode.get() == "neural" else "RBC"
+        info = (
+            f" | perturbazione: {self.perturb_feature.get()} "
+            f"({self.perturb_strength.get():+.2f})"
+            if self.perturb_enabled.get() else ""
+        )
+        append_text(self.console, f"Simulazione avviata con {ctrl}{info}")
+        self._schedule_step()
+
+    def _schedule_step(self):
+        if self.stop_requested:
+            self.simulation_running = False
+            append_text(self.console, "Simulazione fermata")
+            return
+        self.run_single_step()
+        self.root.after(400, self._schedule_step)
+
+    def stop_simulation(self):
+        self.stop_requested = True
+        append_text(self.console, "Richiesta di stop inviata")
+
+    # ─────────────────────────────────────────
+    # TRAINING
+    # ─────────────────────────────────────────
+    def train_neural_policy(self):
+        append_text(self.console, "Avvio training LinearRegressorPolicy...")
+        redirector = TextRedirector(self.console)
+        try:
+            with contextlib.redirect_stdout(redirector), contextlib.redirect_stderr(redirector):
+                ok, message = self.neural_policy.train()
+                redirector.flush()
+        except Exception as e:
+            ok      = False
+            message = f"Errore: {e}"
+        self.neural_status_label.config(
+            text=f"Stato: {message}",
+            fg=GREEN if ok else RED
+        )
+        append_text(self.console, message)
+
+    # ─────────────────────────────────────────
+    # PERTURBAZIONI
+    # ─────────────────────────────────────────
+    def _on_entry_change(self):
+        try:
+            value = float(self.perturb_entry.get().replace(",", "."))
+            self.perturb_strength.set(value)
+            self._refresh_action_display()
+        except ValueError:
+            self.perturb_entry.delete(0, "end")
+            self.perturb_entry.insert(0, "0.00")
+
+    def apply_perturbation(self):
+        try:
+            value = float(self.perturb_entry.get().replace(",", "."))
+            self.perturb_strength.set(value)
+        except ValueError:
+            value = 0.0
+            self.perturb_entry.delete(0, "end")
+            self.perturb_entry.insert(0, "0.00")
+        self.perturb_enabled.set(True)
+        feature = self.perturb_feature.get()
+        append_text(self.console, f"Perturbazione attiva: {feature} {value:+.2f}")
+        self._refresh_action_display()
+        self._update_perturb_status()
+
+    def clear_perturbation(self):
+        self.perturb_enabled.set(False)
+        self.perturb_strength.set(0.0)
+        self.perturb_entry.delete(0, "end")
+        self.perturb_entry.insert(0, "0.00")
+        append_text(self.console, "Perturbazione disattivata")
+        self._refresh_action_display()
+        self._update_perturb_status()
+
+    def _update_perturb_status(self):
+        if self.perturb_enabled.get():
+            feature  = self.perturb_feature.get()
+            strength = self.perturb_strength.get()
+            self.perturb_status_label.config(
+                text=f"Attiva: {feature} {strength:+.2f}", fg=ORANGE
+            )
+        else:
+            self.perturb_status_label.config(text="Disattivata", fg=TEXT_MUTED)
+
+    # ─────────────────────────────────────────
+    # LAYOUT
+    # ─────────────────────────────────────────
     def build_layout(self):
         self.root.rowconfigure(1, weight=1)
         self.root.columnconfigure(0, weight=1)
 
-        header = tk.Frame(self.root, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+        header = tk.Frame(self.root, bg=BG_CARD,
+                          highlightbackground=BORDER, highlightthickness=1)
         header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
 
         tk.Label(
             header,
-            text="Confronto RBC reale vs Policy neurale",
-            bg=BG_CARD,
-            fg=TEXT,
-            font=("Helvetica", 20, "bold"),
-            anchor="w",
+            text="RBC vs Policy Neurale  -  Robustezza a Perturbazioni",
+            bg=BG_CARD, fg=TEXT, font=F_TITLE, anchor="w",
         ).pack(fill="x", padx=18, pady=(14, 4))
-
         tk.Label(
             header,
-            text="La GUI usa AdvancedRBC da main_rbc.py tramite wrapper sulle osservazioni",
-            bg=BG_CARD,
-            fg=TEXT_MUTED,
-            font=("Helvetica", 11),
-            anchor="w",
+            text="Le perturbazioni vengono applicate sull'input della policy  -  "
+                 "confronta azioni pulite e perturbate in tempo reale",
+            bg=BG_CARD, fg=TEXT_MUTED, font=F_SUBTITLE, anchor="w",
         ).pack(fill="x", padx=18, pady=(0, 14))
 
         content = tk.Frame(self.root, bg=BG_APP)
@@ -331,228 +522,248 @@ class App:
         content.columnconfigure(1, weight=3)
         content.columnconfigure(2, weight=3)
 
-        self.build_left_panel(content)
-        self.build_center_panel(content)
-        self.build_right_panel(content)
+        self._build_left(content)
+        self._build_center(content)
+        self._build_right(content)
 
-    def build_left_panel(self, parent):
-        left = tk.Frame(parent, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+    # ── Pannello sinistro ──────────────────────
+    def _build_left(self, parent):
+        left = tk.Frame(parent, bg=BG_CARD,
+                        highlightbackground=BORDER, highlightthickness=1)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        tk.Label(left, text="Controlli", bg=BG_CARD, fg=TEXT, font=("Helvetica", 15, "bold"), anchor="w").pack(fill="x", padx=16, pady=(16, 10))
+        tk.Label(left, text="Controlli", bg=BG_CARD, fg=TEXT,
+                 font=F_SECTION, anchor="w"
+                 ).pack(fill="x", padx=16, pady=(16, 10))
 
-        mode_box = tk.LabelFrame(left, text="Controller", bg=BG_CARD, fg=TEXT)
-        mode_box.pack(fill="x", padx=16, pady=(0, 12))
+        # Controller
+        mode_box = tk.LabelFrame(left, text="Controller", bg=BG_CARD, fg=TEXT,
+                                  font=F_LABEL_H)
+        mode_box.pack(fill="x", padx=16, pady=(0, 14))
 
-        tk.Radiobutton(mode_box, text="RBC (main_rbc.AdvancedRBC)", variable=self.policy_mode, value="rbc", command=self.refresh_view, bg=BG_CARD).pack(anchor="w", padx=10, pady=(8, 4))
-        tk.Radiobutton(mode_box, text="Policy neurale", variable=self.policy_mode, value="neural", command=self.refresh_view, bg=BG_CARD).pack(anchor="w", padx=10, pady=(0, 8))
+        tk.Radiobutton(
+            mode_box, text="RBC  (AdvancedRBC)",
+            variable=self.policy_mode, value="rbc",
+            command=self._refresh_action_display,
+            bg=BG_CARD, font=F_RADIO
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        tk.Radiobutton(
+            mode_box, text="Policy neurale  (LinearRegressor)",
+            variable=self.policy_mode, value="neural",
+            command=self._refresh_action_display,
+            bg=BG_CARD, font=F_RADIO
+        ).pack(anchor="w", padx=12, pady=(0, 12))
 
-        model_box = tk.LabelFrame(left, text="Policy neurale", bg=BG_CARD, fg=TEXT)
-        model_box.pack(fill="x", padx=16, pady=(0, 12))
+        # Training
+        train_box = tk.LabelFrame(left, text="Policy neurale", bg=BG_CARD, fg=TEXT,
+                                   font=F_LABEL_H)
+        train_box.pack(fill="x", padx=16, pady=(0, 14))
 
-        create_button(model_box, "Train model", self.train_neural_policy, BLUE, active_bg=BLUE_HOVER, width=18).pack(anchor="w", padx=10, pady=(10, 8))
+        create_button(train_box, "Train model", self.train_neural_policy,
+                      BLUE, active_bg=BLUE_HOVER, width=20
+                      ).pack(anchor="w", padx=12, pady=(12, 8))
 
-        self.neural_status_label = tk.Label(model_box, text="Stato: non addestrata", bg=BG_CARD, fg=TEXT_MUTED, justify="left", anchor="w")
-        self.neural_status_label.pack(fill="x", padx=10, pady=(0, 10))
+        self.neural_status_label = tk.Label(
+            train_box, text="Stato: non addestrata",
+            bg=BG_CARD, fg=TEXT_MUTED, anchor="w", font=F_BODY
+        )
+        self.neural_status_label.pack(fill="x", padx=12, pady=(0, 12))
 
-        perturb_box = tk.LabelFrame(left, text="Perturbazioni", bg=BG_CARD, fg=TEXT)
-        perturb_box.pack(fill="x", padx=16, pady=(0, 12))
+        # Perturbazioni
+        perturb_box = tk.LabelFrame(left, text="Perturbazione input policy",
+                                     bg=BG_CARD, fg=TEXT, font=F_LABEL_H)
+        perturb_box.pack(fill="x", padx=16, pady=(0, 14))
 
-        ttk.Combobox(perturb_box, textvariable=self.perturbation_feature, values=PERTURBATION_TARGETS, state="readonly").pack(fill="x", padx=10, pady=(10, 8))
-        tk.Scale(perturb_box, from_=-1.0, to=1.0, resolution=0.1, orient="horizontal", variable=self.perturbation_strength, bg=BG_CARD, highlightthickness=0).pack(fill="x", padx=10)
-        tk.Checkbutton(perturb_box, text="Perturbazione casuale a ogni step", variable=self.auto_perturb, bg=BG_CARD).pack(anchor="w", padx=10, pady=(4, 8))
+        tk.Label(perturb_box, text="Feature da perturbare:",
+                 bg=BG_CARD, fg=TEXT_MUTED, font=F_BODY
+                 ).pack(anchor="w", padx=12, pady=(12, 4))
 
-        create_button(perturb_box, "Applica perturbazione", self.apply_current_perturbation, GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=18).pack(anchor="w", padx=10, pady=(0, 6))
-        create_button(perturb_box, "Reset stato", self.reset_state, GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=18).pack(anchor="w", padx=10, pady=(0, 10))
+        style = ttk.Style()
+        style.configure("Big.TCombobox", font=F_BODY)
+        ttk.Combobox(
+            perturb_box, textvariable=self.perturb_feature,
+            values=PERTURBATION_TARGETS, state="readonly",
+            font=F_BODY, style="Big.TCombobox"
+        ).pack(fill="x", padx=12, pady=(0, 12))
 
-        sim_box = tk.LabelFrame(left, text="Simulazione", bg=BG_CARD, fg=TEXT)
-        sim_box.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Label(perturb_box, text="Intensita perturbazione:",
+                 bg=BG_CARD, fg=TEXT_MUTED, font=F_BODY
+                 ).pack(anchor="w", padx=12)
 
-        create_button(sim_box, "Step", self.run_single_step, GREEN, active_bg=GREEN, width=12).grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        create_button(sim_box, "Start", self.start_simulation, BLUE, active_bg=BLUE_HOVER, width=12).grid(row=0, column=1, padx=0, pady=10, sticky="w")
-        create_button(sim_box, "Stop", self.stop_simulation, RED, active_bg=RED_HOVER, width=12).grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
-        create_button(sim_box, "Confronta", self.compare_policies, GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=12).grid(row=1, column=1, padx=0, pady=(0, 10), sticky="w")
+        entry_row = tk.Frame(perturb_box, bg=BG_CARD)
+        entry_row.pack(fill="x", padx=12, pady=(6, 12))
 
-        inputs_box = tk.LabelFrame(left, text="Stato osservato", bg=BG_CARD, fg=TEXT)
-        inputs_box.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        self.perturb_entry = tk.Entry(
+            entry_row, font=F_BODY, width=10,
+            relief="solid", bd=1, justify="center"
+        )
+        self.perturb_entry.insert(0, "0.00")
+        self.perturb_entry.pack(side="left", padx=(0, 10), ipady=6)
+        self.perturb_entry.bind("<Return>",   lambda e: self._on_entry_change())
+        self.perturb_entry.bind("<FocusOut>", lambda e: self._on_entry_change())
 
-        for name, value in DEFAULT_STATE.items():
-            row = tk.Frame(inputs_box, bg=BG_CARD)
-            row.pack(fill="x", padx=10, pady=4)
-            tk.Label(row, text=name, width=20, anchor="w", bg=BG_CARD, fg=TEXT).pack(side="left")
-            var = tk.StringVar(value=str(value))
-            entry = tk.Entry(row, textvariable=var, relief="solid", bd=1)
-            entry.pack(side="right", fill="x", expand=True)
-            self.state_vars[name] = var
+        tk.Label(entry_row, text="(Invio per aggiornare)",
+                 bg=BG_CARD, fg=TEXT_MUTED,
+                 font=("Helvetica", 10, "italic")
+                 ).pack(side="left")
 
-    def build_center_panel(self, parent):
-        center = tk.Frame(parent, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+        btn_p = tk.Frame(perturb_box, bg=BG_CARD)
+        btn_p.pack(fill="x", padx=12, pady=(0, 10))
+        create_button(btn_p, "Applica", self.apply_perturbation,
+                      ORANGE, active_bg="#CC7700", width=11
+                      ).pack(side="left", padx=(0, 8))
+        create_button(btn_p, "Rimuovi", self.clear_perturbation,
+                      GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=11
+                      ).pack(side="left")
+
+        self.perturb_status_label = tk.Label(
+            perturb_box, text="Disattivata",
+            bg=BG_CARD, fg=TEXT_MUTED, anchor="w",
+            font=("Helvetica", 11, "italic")
+        )
+        self.perturb_status_label.pack(fill="x", padx=12, pady=(4, 12))
+
+        # Simulazione
+        sim_box = tk.LabelFrame(left, text="Simulazione", bg=BG_CARD, fg=TEXT,
+                                 font=F_LABEL_H)
+        sim_box.pack(fill="x", padx=16, pady=(0, 16))
+
+        row1 = tk.Frame(sim_box, bg=BG_CARD)
+        row1.pack(fill="x", padx=12, pady=(14, 8))
+        create_button(row1, "Start", self.start_simulation,
+                      BLUE, active_bg=BLUE_HOVER, width=12
+                      ).pack(side="left", padx=(0, 10))
+        create_button(row1, "Stop", self.stop_simulation,
+                      RED, active_bg=RED_HOVER, width=12
+                      ).pack(side="left")
+
+        row2 = tk.Frame(sim_box, bg=BG_CARD)
+        row2.pack(fill="x", padx=12, pady=(0, 14))
+        create_button(row2, "Step", self.run_single_step,
+                      GREEN, active_bg=GREEN, width=12
+                      ).pack(side="left", padx=(0, 10))
+        create_button(row2, "Reset", self._reset_environment,
+                      GRAY_BUTTON, fg=TEXT, active_bg=GRAY_HOVER, width=12
+                      ).pack(side="left")
+
+    # ── Pannello centrale ──────────────────────
+    def _build_center(self, parent):
+        center = tk.Frame(parent, bg=BG_CARD,
+                          highlightbackground=BORDER, highlightthickness=1)
         center.grid(row=0, column=1, sticky="nsew", padx=8)
-        center.rowconfigure(2, weight=1)
+        center.rowconfigure(1, weight=1)
         center.columnconfigure(0, weight=1)
 
-        tk.Label(center, text="Azioni correnti", bg=BG_CARD, fg=TEXT, font=("Helvetica", 15, "bold"), anchor="w").grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        tk.Label(center, text="Confronto azioni", bg=BG_CARD, fg=TEXT,
+                 font=F_SECTION, anchor="w"
+                 ).grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 10))
 
-        cards = tk.Frame(center, bg=BG_CARD)
-        cards.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
-        cards.columnconfigure(0, weight=1)
-        cards.columnconfigure(1, weight=1)
-        cards.columnconfigure(2, weight=1)
+        table = tk.Frame(center, bg=BG_CARD)
+        table.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        for c in range(4):
+            table.columnconfigure(c, weight=1)
 
-        for i, device in enumerate(["cooling_device", "dhw_storage", "electrical_storage"]):
-            card = tk.Frame(cards, bg="#F8F8FA", highlightbackground=BORDER, highlightthickness=1)
-            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 8, 0))
-            tk.Label(card, text=device, bg="#F8F8FA", fg=TEXT_MUTED, font=("Helvetica", 10)).pack(anchor="w", padx=12, pady=(10, 4))
-            value_label = tk.Label(card, text="0.000", bg="#F8F8FA", fg=TEXT, font=("Helvetica", 18, "bold"))
-            value_label.pack(anchor="w", padx=12, pady=(0, 10))
-            self.metric_labels[device] = value_label
+        headers = ["Dispositivo", "Input pulito", "Input perturbato", "Differenza"]
+        col_bgs = [BG_CARD2, BLUE_LIGHT, ORANGE_LIGHT, BG_CARD2]
+        col_fgs = [TEXT_MUTED, BLUE, ORANGE, TEXT_MUTED]
+        for col, (h, bg, fg) in enumerate(zip(headers, col_bgs, col_fgs)):
+            tk.Label(
+                table, text=h, bg=bg, fg=fg,
+                font=F_TABLE_H, anchor="center", padx=8, pady=12
+            ).grid(row=0, column=col, sticky="ew", padx=(0, 4), pady=(0, 8))
 
-        details_box = tk.LabelFrame(center, text="Dettaglio device", bg=BG_CARD, fg=TEXT)
-        details_box.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        for row, device in enumerate(RBC_ACTION_NAMES, start=1):
+            tk.Label(
+                table, text=device, bg=BG_CARD2, fg=TEXT,
+                font=F_DEVICE, anchor="w", padx=14, pady=22
+            ).grid(row=row, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
 
-        for device in ["cooling_device", "dhw_storage", "electrical_storage"]:
-            section = tk.Frame(details_box, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
-            section.pack(fill="x", padx=10, pady=8)
-            tk.Label(section, text=device, bg=BG_CARD, fg=TEXT, font=("Helvetica", 12, "bold")).pack(anchor="w", padx=10, pady=(8, 4))
-            detail = tk.Label(section, text="", justify="left", anchor="w", bg=BG_CARD, fg=TEXT_MUTED, font=("Helvetica", 10))
-            detail.pack(fill="x", padx=10, pady=(0, 8))
-            self.detail_labels[device] = detail
+            clean_lbl = tk.Label(
+                table, text="0.000", bg=BLUE_LIGHT, fg=BLUE,
+                font=F_TABLE_V, anchor="center", padx=8, pady=22
+            )
+            clean_lbl.grid(row=row, column=1, sticky="ew", padx=(0, 4), pady=(0, 8))
+            self.clean_labels[device] = clean_lbl
 
-    def build_right_panel(self, parent):
-        right = tk.Frame(parent, bg=BG_CARD, highlightbackground=BORDER, highlightthickness=1)
+            pert_lbl = tk.Label(
+                table, text="0.000", bg=ORANGE_LIGHT, fg=ORANGE,
+                font=F_TABLE_V, anchor="center", padx=8, pady=22
+            )
+            pert_lbl.grid(row=row, column=2, sticky="ew", padx=(0, 4), pady=(0, 8))
+            self.perturbed_labels[device] = pert_lbl
+
+            diff_lbl = tk.Label(
+                table, text="D 0.000", bg=BG_CARD2, fg=GREEN,
+                font=F_DIFF, anchor="center", padx=8, pady=22
+            )
+            diff_lbl.grid(row=row, column=3, sticky="ew", padx=(0, 4), pady=(0, 8))
+            self.diff_labels[device] = diff_lbl
+
+        # Legenda
+        legend = tk.Frame(center, bg=BG_CARD)
+        legend.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 16))
+        for color, label, desc in [
+            (GREEN,  "D < 0.05",    "robusta"),
+            (ORANGE, "D 0.05-0.20", "sensibile"),
+            (RED,    "D > 0.20",    "fragile"),
+        ]:
+            tk.Label(legend, text=label, bg=BG_CARD, fg=color,
+                     font=F_BODY_B).pack(side="left", padx=(0, 6))
+            tk.Label(legend, text=desc, bg=BG_CARD, fg=TEXT_MUTED,
+                     font=F_BODY).pack(side="left", padx=(0, 24))
+
+    # ── Pannello destro ────────────────────────
+    def _build_right(self, parent):
+        right = tk.Frame(parent, bg=BG_CARD,
+                         highlightbackground=BORDER, highlightthickness=1)
         right.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
-        right.rowconfigure(1, weight=1)
+        right.rowconfigure(3, weight=1)
         right.columnconfigure(0, weight=1)
 
-        tk.Label(right, text="Console e confronto", bg=BG_CARD, fg=TEXT, font=("Helvetica", 15, "bold"), anchor="w").grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        tk.Label(right, text="Osservazioni correnti", bg=BG_CARD, fg=TEXT,
+                 font=F_SECTION, anchor="w"
+                 ).grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 10))
 
-        self.console = tk.Text(right, wrap="word", state="disabled", bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", bd=0, font=("Menlo", 11))
-        self.console.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        obs_frame = tk.Frame(right, bg=BG_CARD)
+        obs_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
+        obs_frame.columnconfigure(1, weight=1)
+
+        for i, name in enumerate(RBC_OBSERVATION_NAMES):
+            tk.Label(
+                obs_frame, text=name, bg=BG_CARD, fg=TEXT_MUTED,
+                font=F_OBS_NAME, anchor="w"
+            ).grid(row=i, column=0, sticky="w", padx=(0, 16), pady=3)
+
+            val_lbl = tk.Label(
+                obs_frame, text="---", bg=BG_CARD, fg=TEXT,
+                font=F_OBS_VAL, anchor="e"
+            )
+            val_lbl.grid(row=i, column=1, sticky="e", pady=3)
+            self.obs_labels[name] = val_lbl
+
+        tk.Label(right, text="Console", bg=BG_CARD, fg=TEXT,
+                 font=F_SECTION, anchor="w"
+                 ).grid(row=2, column=0, sticky="ew", padx=16, pady=(10, 6))
+
+        self.console = tk.Text(
+            right, wrap="word", state="disabled",
+            bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", bd=0,
+            font=F_CONSOLE, padx=10, pady=10
+        )
+        self.console.grid(row=3, column=0, sticky="nsew", padx=16, pady=(0, 16))
 
         append_text(self.console, "GUI pronta")
-        append_text(self.console, "Seleziona RBC o policy neurale")
-        append_text(self.console, "Usa le perturbazioni per mostrare robustezza")
+        append_text(self.console, "Per la policy neurale premi prima Train model")
+        append_text(self.console, "Imposta una perturbazione e premi Applica per testare la robustezza")
 
-    def read_state_from_inputs(self):
-        state = {}
-        for name, var in self.state_vars.items():
-            try:
-                state[name] = float(var.get())
-            except ValueError:
-                state[name] = DEFAULT_STATE[name]
-                var.set(str(DEFAULT_STATE[name]))
-        self.current_state = state
-        return state
-
-    def write_state_to_inputs(self, state):
-        for name, value in state.items():
-            self.state_vars[name].set(str(round(float(value), 4)))
-
-    def get_active_policy(self):
-        if self.policy_mode.get() == "neural":
-            return self.neural_policy, "Policy neurale"
-        return self.rbc_policy, "RBC reale"
-
-    def compute_actions(self, state):
-        policy, _ = self.get_active_policy()
-        return policy.predict(state)
-
-    def refresh_view(self, first_time=False):
-        state = self.read_state_from_inputs()
-        actions = self.compute_actions(state)
-
-        for name, value in actions.items():
-            self.metric_labels[name].config(text=f"{value:.3f}")
-
-        for device in ["cooling_device", "dhw_storage", "electrical_storage"]:
-            features = DEVICE_FEATURES[device]
-            rows = [f"Azione: {actions[device]:.3f}", "Feature usate:"]
-            for feature in features:
-                rows.append(f"- {feature}: {state[feature]:.3f}")
-            self.detail_labels[device].config(text="\n".join(rows))
-
-        if not first_time:
-            controller = "policy neurale" if self.policy_mode.get() == "neural" else "RBC reale"
-            append_text(self.console, f"Vista aggiornata con {controller}")
-
-    def train_neural_policy(self):
-        append_text(self.console, "Avvio training policy neurale...")
-        ok, message = self.neural_policy.train_if_possible()
-        self.neural_status_label.config(text=f"Stato: {message}")
-        append_text(self.console, message)
-        self.refresh_view()
-
-    def apply_current_perturbation(self):
-        state = self.read_state_from_inputs()
-        feature = self.perturbation_feature.get()
-        strength = self.perturbation_strength.get()
-        new_state = apply_perturbation(state, feature, strength)
-        self.current_state = new_state
-        self.write_state_to_inputs(new_state)
-        append_text(self.console, f"Perturbazione applicata su {feature} con intensità {strength:+.1f}")
-        self.refresh_view()
-
-    def reset_state(self):
-        self.current_state = dict(self.base_state)
-        self.write_state_to_inputs(self.current_state)
-        append_text(self.console, "Stato riportato ai valori iniziali")
-        self.refresh_view()
-
-    def random_perturbation(self):
-        feature = random.choice(PERTURBATION_TARGETS)
-        strength = random.choice([-0.5, -0.3, 0.3, 0.5])
-        self.perturbation_feature.set(feature)
-        self.perturbation_strength.set(strength)
-        self.apply_current_perturbation()
-
-    def run_single_step(self):
-        if self.auto_perturb.get():
-            self.random_perturbation()
-        else:
-            self.read_state_from_inputs()
-
-        self.step_count += 1
-        actions = self.compute_actions(self.current_state)
-        _, policy_name = self.get_active_policy()
-        append_text(self.console, f"Step {self.step_count} | controller: {policy_name}")
-        append_text(self.console, f"Azioni -> cooling: {actions['cooling_device']:.3f}, dhw: {actions['dhw_storage']:.3f}, battery: {actions['electrical_storage']:.3f}")
-        self.refresh_view()
-
-    def start_simulation(self):
-        if self.simulation_running:
-            append_text(self.console, "Simulazione già in esecuzione")
-            return
-        self.simulation_running = True
-        self.stop_requested = False
-        append_text(self.console, "Simulazione avviata")
-        self.schedule_step()
-
-    def schedule_step(self):
-        if self.stop_requested:
-            self.simulation_running = False
-            append_text(self.console, "Simulazione fermata")
-            return
-        self.run_single_step()
-        self.root.after(1200, self.schedule_step)
-
-    def stop_simulation(self):
-        self.stop_requested = True
-        append_text(self.console, "Richiesta di stop inviata")
-
-    def compare_policies(self):
-        state = self.read_state_from_inputs()
-        rbc_actions = self.rbc_policy.predict(state)
-        neural_actions = self.neural_policy.predict(state)
-        append_text(self.console, "Confronto RBC reale vs policy neurale")
-        for device in ["cooling_device", "dhw_storage", "electrical_storage"]:
-            diff = abs(rbc_actions[device] - neural_actions[device])
-            append_text(self.console, f"{device}: RBC={rbc_actions[device]:.3f} | Neural={neural_actions[device]:.3f} | |diff|={diff:.3f}")
+    def mainloop(self):
+        self.root.mainloop()
 
 
 def main():
     root = tk.Tk()
-    App(root)
-    root.mainloop()
+    app  = App(root)
+    app.mainloop()
 
 
 if __name__ == "__main__":
