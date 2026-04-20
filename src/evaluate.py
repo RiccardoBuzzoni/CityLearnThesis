@@ -154,10 +154,9 @@ def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
     indoor_temp  = np.array(temp_data['indoor_dry_bulb_temperature'])
     set_point    = np.array(temp_data['indoor_dry_bulb_temperature_set_point'])
     comfort_band = np.array(temp_data['comfort_band'])
-    action_rbc   = np.array(res_rbc['env_h']['actions']['cooling_device'])
 
     fig, ax1 = plt.subplots(figsize=(20, 6))
-    ax1.set_title('Cooling Device — Action Value and Indoor Temperature')
+    ax1.set_title('Cooling Device — Indoor Temperature and Comfort Band')
 
     # Comfort band shading
     ax1.fill_between(time_steps, set_point + comfort_band, set_point - comfort_band,
@@ -173,28 +172,15 @@ def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
     ax1.set_xlabel('Time Step (Hours)')
     ax1.grid(True, alpha=0.3)
 
-    # Action axis
-    ax2 = ax1.twinx()
-    ax2.plot(time_steps, action_rbc,
-             label='cooling_device (RBC)', linewidth=1.0, color='tab:red')
-
     if res_reg is not None:
         indoor_temp_reg = np.array(res_reg['env_h']['temperature']['indoor_dry_bulb_temperature'])
-        action_reg      = np.array(res_reg['env_h']['actions']['cooling_device'])
 
         ax1.plot(time_steps, indoor_temp_reg,
                  label='Indoor Temp (Regressor)', linewidth=1.5,
                  color='tab:blue', linestyle='--', alpha=0.7)
-        ax2.plot(time_steps, action_reg,
-                 label='cooling_device (Regressor)', linewidth=1.0,
-                 color='tab:red', linestyle='--', alpha=0.7)
-
-    ax2.set_ylabel('cooling_device action [0, 1]')
-    ax2.set_ylim(-0.05, 1.05)
 
     lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+    ax1.legend(lines1, labels1, loc='upper right')
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -216,10 +202,9 @@ def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
     '''
     time_steps  = range(res_rbc['env_h']['time_steps'])
     soc_rbc     = np.array(res_rbc['env_h']['dhw']['dhw_storage_soc'])
-    action_rbc  = np.array(res_rbc['env_h']['actions']['dhw_storage'])
 
     fig, ax1 = plt.subplots(figsize=(20, 6))
-    ax1.set_title('DHW Storage — Action Value and State of Charge')
+    ax1.set_title('DHW Storage — State of Charge')
 
     ax1.plot(time_steps, soc_rbc,
              label='DHW SoC (RBC)', linewidth=1.5, color='tab:blue')
@@ -228,27 +213,16 @@ def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
     ax1.grid(True, alpha=0.3)
 
     ax2 = ax1.twinx()
-    ax2.plot(time_steps, action_rbc,
-             label='dhw_storage action (RBC)', linewidth=1.0, color='tab:red')
 
     if res_reg is not None:
         soc_reg    = np.array(res_reg['env_h']['dhw']['dhw_storage_soc'])
-        action_reg = np.array(res_reg['env_h']['actions']['dhw_storage'])
 
         ax1.plot(time_steps, soc_reg,
                  label='DHW SoC (Regressor)', linewidth=1.5,
                  color='tab:blue', linestyle='--', alpha=0.7)
-        ax2.plot(time_steps, action_reg,
-                 label='dhw_storage action (Regressor)', linewidth=1.0,
-                 color='tab:red', linestyle='--', alpha=0.7)
-
-    ax2.set_ylabel('dhw_storage action [-1, 1]')
-    ax2.set_ylim(-1.1, 1.1)
-    ax2.axhline(0, color='gray', linewidth=0.6, linestyle=':')
 
     lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+    ax1.legend(lines1, labels1, loc='upper right')
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -270,7 +244,6 @@ def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage
     '''
     time_steps  = range(res_rbc['env_h']['time_steps'])
     soc_rbc     = np.array(res_rbc['env_h']['electrical_storage_soc'])
-    action_rbc  = np.array(res_rbc['env_h']['actions']['electrical_storage'])
 
     fig, ax1 = plt.subplots(figsize=(20, 6))
     ax1.set_title('Electrical Storage — Action Value and State of Charge')
@@ -281,28 +254,15 @@ def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage
     ax1.set_xlabel('Time Step (Hours)')
     ax1.grid(True, alpha=0.3)
 
-    ax2 = ax1.twinx()
-    ax2.plot(time_steps, action_rbc,
-             label='electrical_storage action (RBC)', linewidth=1.0, color='tab:red')
-
     if res_reg is not None:
         soc_reg    = np.array(res_reg['env_h']['electrical_storage_soc'])
-        action_reg = np.array(res_reg['env_h']['actions']['electrical_storage'])
 
         ax1.plot(time_steps, soc_reg,
                  label='Electrical SoC (Regressor)', linewidth=1.5,
                  color='tab:orange', linestyle='--', alpha=0.7)
-        ax2.plot(time_steps, action_reg,
-                 label='electrical_storage action (Regressor)', linewidth=1.0,
-                 color='tab:red', linestyle='--', alpha=0.7)
-
-    ax2.set_ylabel('electrical_storage action [-1, 1]')
-    ax2.set_ylim(-1.1, 1.1)
-    ax2.axhline(0, color='gray', linewidth=0.6, linestyle=':')
 
     lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+    ax1.legend(lines1, labels1, loc='upper right')
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)

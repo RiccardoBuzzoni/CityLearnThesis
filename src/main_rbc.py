@@ -111,6 +111,15 @@ class AdvancedRBC(Agent):
             # Hours of the day
             hour = o[available_obs.index('hour')]
 
+            # Electrical storage state of charge
+            electrical_storage_soc = o[available_obs.index('electrical_storage_soc')]
+
+            # DHW storage state of charge
+            dhw_storage_soc = o[available_obs.index('dhw_storage_soc')]
+
+            # DHW demand
+            dhw_demand = o[available_obs.index('dhw_demand')]
+
             if 'cooling_device' in available_act:
                 # Peak hours
                 if 12 <= hour <= 17:
@@ -293,7 +302,6 @@ class AdvancedRBC(Agent):
                             action[available_act.index('cooling_device')] = 0.1
 
             if 'electrical_storage' in available_act:
-                # Peak hours -> no action
                 if 8 <= hour <= 10 or 18 <= hour <= 21:
                     action[available_act.index('electrical_storage')] = -1.0
                 # Off-peak hours -> charge
@@ -303,10 +311,8 @@ class AdvancedRBC(Agent):
                         action[available_act.index('electrical_storage')] = 0.75
                     else:
                         action[available_act.index('electrical_storage')] = 0.4
-                        
 
             if 'dhw_storage' in available_act:
-                # Peak hours -> minimal discharge
                 if 6 <= hour <= 9 or 18 <= hour <= 22:
                     action[available_act.index('dhw_storage')] = -1.0
                 # Off-peak hours with possible high solar generation
@@ -349,6 +355,8 @@ def run_simulation(agent, env):
     observations, _ = env.reset()
     max_steps = env.time_steps - 1
 
+    building = env.buildings[0]
+
     # KPI logging: weekly and daily -> To implement in UserRBC
     weekly_interval_steps = 7 * 24  # 168 steps
     daily_interval_steps = 1 * 24   # 24 steps
@@ -384,6 +392,16 @@ def run_simulation(agent, env):
     for _ in range(max_steps):
         actions = agent.predict(observations)
         observations, reward, terminated, truncated, info = env.step(actions)
+
+        # Apply fix
+        obs_names = agent.observation_names[0]
+        idx_elec = obs_names.index('electrical_storage_soc')
+        idx_dhw = obs_names.index('dhw_storage_soc')
+
+        observations[0][idx_elec] = building.electrical_storage.soc[building.time_step - 1]
+        observations[0][idx_dhw] = building.dhw_storage.soc[building.time_step - 1] 
+
+
         step_index += 1
 
         # Write daily KPIs every daily_interval_steps
