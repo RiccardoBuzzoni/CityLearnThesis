@@ -20,6 +20,7 @@ from linear_regressor import (
     FEATURE_COLS,
     TARGET_COLS,
     DOMAIN_FEATURES,
+    OUTPUT_DIR,
     main as train_linear_models,
 )
 
@@ -351,13 +352,32 @@ def main():
 
     print(f"Start evaluation with dataset: {args.data}")
 
-    # ── Train linear regressors ───────────────────────────────────────
-    # Each model is trained on the domain-relevant features for its target.
-    # Two separate environments are needed because each simulation resets
-    # the environment state — running both agents on the same env instance
-    # would produce inconsistent results.
-    print("Training linear regressors...")
-    trained_models, trained_features, mean, std = train_linear_models()
+    print("Loading normalization statistics...")
+    try:
+        mean = np.load(os.path.join(OUTPUT_DIR, "feature_mean.npy"))
+        std  = np.load(os.path.join(OUTPUT_DIR, "feature_std.npy"))
+    except FileNotFoundError:
+        print(f"Error: Statistics files not found in {OUTPUT_DIR}. Run linear_regressor.py first.")
+        return
+    
+    trained_models = {}
+    trained_features = DOMAIN_FEATURES
+
+    print("Loading trained linear regressor models...")
+    for target in TARGET_COLS:
+        domain_feats = DOMAIN_FEATURES[target]
+        is_storage = target in ["dhw_storage", "electrical_storage"]
+        
+        model = LinearRegressor(input_dim=len(domain_feats), is_storage=is_storage)
+        
+        model_path = os.path.join(OUTPUT_DIR, f"model_{target}.pth")
+        if not os.path.exists(model_path):
+            print(f"  Error: Model file {model_path} not found.")
+            return
+            
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
+        trained_models[target] = model
 
     # ── RBC evaluation ────────────────────────────────────────────────
     env_rbc = CityLearnEnv(schema=schema, central_agent=True)
@@ -367,11 +387,11 @@ def main():
     # ── Linear Regressor evaluation ───────────────────────────────────
     env_reg = CityLearnEnv(schema=schema, central_agent=True)
     reg_agent = LinearRegressorAgent(
-        env          = env_reg,
-        trained_models  = trained_models,
-        trained_features = trained_features,
-        mean         = mean,
-        std          = std,
+        env                 = env_reg,
+        trained_models      = trained_models,
+        trained_features    = trained_features,
+        mean                = mean,
+        std                 = std,
     )
     print("Running LinearRegressorAgent...")
     results_reg = evaluate_agent(reg_agent, env_reg)

@@ -239,9 +239,14 @@ def plot_mean_importance(
 # ──────────────────────────────────────────────
 
 def main():
-    # ── Train models (one per target, each on its domain features) ────
-    print("Training linear regressors...")
-    trained_models, trained_features, mean, std = train_models()
+    # ── Load normalisation statistics ────
+    print("Loading normalization statistics...")
+    try:
+        mean = np.load(os.path.join(OUTPUT_DIR, "feature_mean.npy"))
+        std  = np.load(os.path.join(OUTPUT_DIR, "feature_std.npy"))
+    except FileNotFoundError:
+        print(f"Error: Statistics files not found in {OUTPUT_DIR}. Run linear_regressor.py first.")
+        return
 
     # ── Reload raw data and rebuild eval split ────────────────────────
     df = pd.read_csv(DATA_PATH)
@@ -256,16 +261,23 @@ def main():
     X_train_norm_all = (X_train_raw - mean) / std
     X_eval_norm_all  = (X_eval_raw  - mean) / std
 
-    # ── Iterate over all three targets ───────────────────────────────
+    # ── Load models ───────────────────────────────
     for target in LIME_TARGETS:
         print(f"\n{'═'*50}")
         print(f"LIME analysis — {target}")
 
         target_idx   = TARGET_COLS.index(target)
         y_eval       = Y_eval[:, target_idx]
-        model        = trained_models[target]
-        domain_feats = trained_features[target]
+        domain_feats = DOMAIN_FEATURES[target]
         col_idx      = [FEATURE_COLS.index(f) for f in domain_feats]
+
+        is_storage = target in ["dhw_storage", "electrical_storage"]
+        model = LinearRegressor(input_dim=len(domain_feats), is_storage=is_storage)
+
+        model_path = os.path.join(OUTPUT_DIR, f"model_{target}.pth")
+        print(f"Loading model weights from: {model_path}")
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
 
         # Slice domain-relevant columns
         X_train_lime = X_train_norm_all[:, col_idx]

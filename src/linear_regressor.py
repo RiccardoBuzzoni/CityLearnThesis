@@ -331,6 +331,11 @@ def main():
 
         plot_metrics(train_losses, eval_losses, train_maes, eval_maes,
                      target, OUTPUT_DIR)
+        
+        # Save model
+        model_filename = os.path.join(OUTPUT_DIR, f"model_{target}.pth")
+        torch.save(model.state_dict(), model_filename)
+        print(f"  Model saved → {model_filename}")
 
         trained_models[target]   = model
         trained_features[target] = domain_feats
