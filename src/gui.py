@@ -27,7 +27,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import pandas as pd
 import numpy as np
 
-# ── Colours ───────────────────────────────────────────────────────────────────
+# Colours
 BG_APP       = "#ECECEC"
 BG_CARD      = "#FFFFFF"
 BLUE         = "#007AFF"
@@ -79,25 +79,25 @@ ACTION_PERTURB_MAP = {
 PERTURB_TARGETS = OBS_PERTURB_TARGETS + list(ACTION_PERTURB_TARGETS.keys())
 
 CL_TO_CSV = {
-    "indoor_dry_bulb_temperature":                   "indoor_temp",
+    "indoor_dry_bulb_temperature":              "indoor_temp",
     "indoor_dry_bulb_temperature_cooling_set_point": "cooling_set_point",
-    "outdoor_dry_bulb_temperature":                  "outdoor_temp",
-    "outdoor_dry_bulb_temperature_predicted_1":      "outdoor_temp_predicted",
-    "cooling_demand":                                "cooling_demand",
-    "electricity_pricing":                           "elec_price",
-    "carbon_intensity":                              "carbon_intensity",
-    "solar_generation":                              "solar_generation",
-    "occupant_count":                                "occupant_count",
-    "hour":                                          "hour",
-    "electrical_storage_soc":                        "electrical_storage_soc",
-    "dhw_storage_soc":                               "dhw_storage_soc",
-    "dhw_demand":                                    "dhw_demand",
+    "outdoor_dry_bulb_temperature":             "outdoor_temp",
+    "outdoor_dry_bulb_temperature_predicted_1": "outdoor_temp_predicted",
+    "cooling_demand":                           "cooling_demand",
+    "electricity_pricing":                      "elec_price",
+    "carbon_intensity":                         "carbon_intensity",
+    "solar_generation":                         "solar_generation",
+    "occupant_count":                           "occupant_count",
+    "hour":                                     "hour",
+    "electrical_storage_soc":                   "electrical_storage_soc",
+    "dhw_storage_soc":                          "dhw_storage_soc",
+    "dhw_demand":                               "dhw_demand",
 }
 CL_TO_LR = CL_TO_CSV
 DEFAULT_DATASET = "citylearn_challenge_2023_phase_1"
 
-# ── Colonne CSV di simulazione ─────────────────────────────────────────────────
-SIM_ACT_COLS  = (
+# Colonne CSV di simulazione
+SIM_ACT_COLS = (
     [f"{a}_clean" for a in ACTION_NAMES] +
     [f"{a}_pert"  for a in ACTION_NAMES] +
     [f"{a}_delta" for a in ACTION_NAMES]
@@ -113,11 +113,11 @@ SIM_PLOT_CHOICES = (
     [f"{a}_delta" for a in ACTION_NAMES]
 )
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 def log(widget, msg):
     ts = datetime.now().strftime("%H:%M:%S")
     widget.config(state="normal")
-    widget.insert("end", f"{ts}  {msg}\n")
+    widget.insert("end", f"{ts} {msg}\n")
     widget.see("end")
     widget.config(state="disabled")
     widget.update_idletasks()
@@ -157,10 +157,13 @@ def card(parent, title, col, row=0, padx=(0, 6), colspan=1):
     inner.pack(fill="both", expand=True, padx=14, pady=(0, 14))
     return outer, inner
 
+
 # ── Neural Policy ─────────────────────────────────────────────────────────────
 class NeuralPolicy:
     def __init__(self):
-        self.ready = False; self.models = {}; self.features = {}
+        self.ready    = False
+        self.models   = {}
+        self.features = {}
         self.mean = self.std = None
 
     def load(self, directory: str):
@@ -176,9 +179,9 @@ class NeuralPolicy:
             self.std[self.std == 0] = 1.0
             models = {}; features = {}
             for target in lr.TARGET_COLS:
-                pth_path = os.path.join(directory, f"{target}.pth")
+                pth_path = os.path.join(directory, f"model_{target}.pth")
                 if not os.path.exists(pth_path):
-                    return False, f"File mancante: {target}.pth"
+                    return False, f"File mancante: model_{target}.pth"
                 domain_feats = lr.DOMAIN_FEATURES[target]
                 is_storage   = target in ("dhw_storage", "electrical_storage")
                 model = lr.LinearRegressor(input_dim=len(domain_feats),
@@ -188,8 +191,9 @@ class NeuralPolicy:
                 model.eval()
                 models[target]   = model
                 features[target] = domain_feats
-            self.models = models; self.features = features
-            self.ready  = True
+            self.models   = models
+            self.features = features
+            self.ready    = True
             return True, f"Modello caricato da: {os.path.basename(directory)}"
         except Exception as e:
             return False, f"Errore caricamento: {e}"
@@ -197,11 +201,11 @@ class NeuralPolicy:
     def predict(self, obs):
         if not self.ready:
             return {a: 0.0 for a in ACTION_NAMES}
-        lr_obs = {v: float(obs.get(k, 0.0)) for k, v in CL_TO_LR.items()}
-        f_cols = list(lr.FEATURE_COLS)
-        row    = [lr_obs.get(c, 0.0) for c in f_cols]
-        norm   = [(v - float(self.mean[i])) / (float(self.std[i]) or 1.0)
-                  for i, v in enumerate(row)]
+        lr_obs  = {v: float(obs.get(k, 0.0)) for k, v in CL_TO_LR.items()}
+        f_cols  = list(lr.FEATURE_COLS)
+        row     = [lr_obs.get(c, 0.0) for c in f_cols]
+        norm    = [(v - float(self.mean[i])) / (float(self.std[i]) or 1.0)
+                   for i, v in enumerate(row)]
         out = {}
         for t in lr.TARGET_COLS:
             sel = [norm[f_cols.index(f)] for f in self.features[t]]
@@ -210,18 +214,26 @@ class NeuralPolicy:
                 out[t] = clamp(t, self.models[t](x).item())
         return out
 
+
 # ── Redirector ────────────────────────────────────────────────────────────────
 class Redirector(io.StringIO):
     def __init__(self, widget):
-        super().__init__(); self.widget = widget; self.buf = ""
+        super().__init__()
+        self.widget = widget
+        self.buf    = ""
+
     def write(self, text):
         self.buf += text
         while "\n" in self.buf:
             line, self.buf = self.buf.split("\n", 1)
-            if line.strip(): log(self.widget, line.rstrip())
+            if line.strip():
+                log(self.widget, line.rstrip())
+
     def flush(self):
-        if self.buf.strip(): log(self.widget, self.buf.rstrip())
+        if self.buf.strip():
+            log(self.widget, self.buf.rstrip())
         self.buf = ""
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
 class App:
@@ -235,8 +247,8 @@ class App:
         self.clean_lbl = {}; self.pert_lbl = {}; self.diff_lbl = {}
         self.obs_lbl   = {}
 
-        self.env = None; self.rbc = None
-        self.obs = None; self.obs_dict = {}
+        self.env    = None; self.rbc = None
+        self.obs    = None; self.obs_dict = {}
         self.neural = NeuralPolicy()
 
         self.policy_var  = tk.StringVar(value="rbc")
@@ -247,31 +259,30 @@ class App:
         self.stop_req    = False
         self.step_n      = 0
 
-        # Dataset CSV esterno (grafico statico)
-        self.dataset_df       = None
-        self.ext_plot_canvas  = None
-        self.ext_plot_fig     = None
-        self.ext_plot_ax      = None
+        # ── Dataset baseline (pannello sinistro)
+        self.dataset_df       = None      # DataFrame baseline
         self.ext_plot_obs_var = tk.StringVar(value=OBS_NAMES[0])
-        self.ext_placeholder  = None
 
-        # Registrazione simulazione
+        # ── Dataset simulazione (secondo dataset)
+        self.sim_df = None                # DataFrame sim CSV
+
+        # ── Pannello plot unificato
+        self.unified_plot_canvas  = None
+        self.unified_plot_fig     = None
+        self.unified_plot_ax      = None
+        self.unified_placeholder  = None
+        self.unified_plot_col_var = tk.StringVar(value=OBS_NAMES[0])
+        self.sim_col_combo        = None   # riferimento al widget Combobox
+
+        # ── Registrazione simulazione
         self._sim_file   = None
         self._sim_writer = None
         self._sim_path   = ""
 
-        # Plot simulazione
-        self.sim_df               = None
-        self.sim_plot_col_var     = tk.StringVar(value=SIM_PLOT_CHOICES[0])
-        self.sim_plot_canvas      = None
-        self.sim_plot_fig         = None
-        self.sim_plot_ax          = None
-        self.sim_plot_placeholder = None
-
         self.build()
         self.init_env()
 
-    # ── Environment ───────────────────────────────────────────────────────────
+    # ── Environment ──────────────────────────────────────────────────────────
     def init_env(self):
         if not CITYLEARN_AVAILABLE:
             log(self.console, f"ERROR CityLearn: {CITYLEARN_ERROR}"); return
@@ -300,8 +311,8 @@ class App:
             log(self.console, f"Reset error: {e}")
 
     def store(self, obs):
-        self.obs = obs
-        names = self.rbc.observation_names[0]
+        self.obs   = obs
+        names      = self.rbc.observation_names[0]
         self.obs_dict = {n: obs[0][i] for i, n in enumerate(names)}
 
     def update_obs(self):
@@ -344,17 +355,18 @@ class App:
             d = abs(p[dev] - c[dev])
             self.clean_lbl[dev].config(text=f"{c[dev]:.3f}")
             self.pert_lbl[dev].config(text=f"{p[dev]:.3f}")
-            self.diff_lbl[dev].config(text=f"Δ {d:.3f}", fg=diff_color(d))
+            self.diff_lbl[dev].config(text=f"D {d:.3f}", fg=diff_color(d))
 
     # ── CSV Logging ───────────────────────────────────────────────────────────
     def _open_sim_file(self):
-        ts = datetime.now().strftime("%d%m%Y_%H%M")
+        ts     = datetime.now().strftime("%d%m%Y_%H%M")
         policy = "rbc" if self.policy_var.get() == "rbc" else "neural"
-        self._sim_path   = f"sim_{policy}_{ts}.csv"
-        self._sim_file   = open(self._sim_path, "w", newline="",
-                                encoding="utf-8")
-        self._sim_writer = csv.DictWriter(self._sim_file,
-                                          fieldnames=SIM_ALL_COLS)
+        sim_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "simulations")
+        os.makedirs(sim_dir, exist_ok=True)
+        self._sim_path   = os.path.join(sim_dir, f"sim_{policy}_{ts}.csv")
+        self._sim_file   = open(self._sim_path, "w", newline="", encoding="utf-8")
+        self._sim_writer = csv.DictWriter(self._sim_file, fieldnames=SIM_ALL_COLS)
         self._sim_writer.writeheader()
         self._sim_file.flush()
         log(self.console, f"Saving simulation to: {self._sim_path}")
@@ -390,22 +402,21 @@ class App:
     def step(self):
         if not self.env or self.obs is None:
             log(self.console, "Environment not initialised."); return
-        c, p        = self.compute()
-        acts        = p if self.pert_on.get() else c
+        c, p = self.compute()
+        acts = p if self.pert_on.get() else c
         action_list = [[acts[a] for a in ACTION_NAMES]]
         try:
             obs, reward, term, trunc, _ = self.env.step(action_list)
             self.store(obs)
             self.step_n += 1
             ctrl = "Neural" if self.policy_var.get() == "neural" else "RBC"
-            log(self.console,
-                f"Step {self.step_n} [{ctrl}] reward {reward[0]:.4f}")
+            log(self.console, f"Step {self.step_n} [{ctrl}] reward {reward[0]:.4f}")
             for dev in ACTION_NAMES:
                 d = abs(p[dev] - c[dev])
                 if d > 0.05:
                     log(self.console,
                         f"  ! {dev} clean={c[dev]:.3f} "
-                        f"perturbed={p[dev]:.3f} Δ={d:.3f}")
+                        f"perturbed={p[dev]:.3f} D={d:.3f}")
             self._write_sim_row(reward[0], c, p)
             self.update_obs(); self.refresh()
             if term or trunc:
@@ -422,7 +433,8 @@ class App:
         if self.policy_var.get() == "neural" and not self.neural.ready:
             log(self.console, "Load the neural policy first."); return
         self._open_sim_file()
-        self.running = True; self.stop_req = False
+        self.running  = True
+        self.stop_req = False
         log(self.console, "Simulation started.")
         self.loop()
 
@@ -448,10 +460,10 @@ class App:
                                   fg=GREEN if ok else RED)
         log(self.console, msg)
 
-    # ── External Dataset & plot ───────────────────────────────────────────────
+    # ── Dataset baseline (pannello sinistro) ──────────────────────────────────
     def load_dataset(self):
         path = filedialog.askopenfilename(
-            title="Seleziona il dataset CSV",
+            title="Seleziona il dataset CSV (baseline)",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not path: return
         try:
@@ -489,80 +501,29 @@ class App:
             .pack(padx=20, pady=(0, 16))
         def confirm():
             self.ext_plot_obs_var.set(obs_var.get())
-            dlg.destroy(); self._draw_ext_plot()
+            self.unified_plot_col_var.set(obs_var.get())
+            if self.sim_col_combo is not None:
+                self.sim_col_combo.set(obs_var.get())
+            dlg.destroy()
+            self._draw_unified_plot()
         btn(dlg, "Plot", confirm, BLUE, width=10).pack(pady=(0, 10))
 
-    def _draw_ext_plot(self):
-        if self.dataset_df is None: return
-        cl_name  = self.ext_plot_obs_var.get()
-        csv_name = CL_TO_CSV.get(cl_name, cl_name)
-        col_key  = (csv_name if csv_name in self.dataset_df.columns
-                    else cl_name if cl_name in self.dataset_df.columns
-                    else None)
-        if col_key is None:
-            log(self.console, f"Colonna '{cl_name}' non trovata nel dataset.")
-            return
-        if self.ext_placeholder is not None:
-            self.ext_placeholder.pack_forget(); self.ext_placeholder = None
-
-        clean_series  = self.dataset_df[col_key].values.astype(float)
-        action_target = self.is_action_perturb()
-        delta         = self.pert_amount.get() if self.pert_on.get() else 0.0
-        pert_series   = (clean_series + delta
-                         if self.pert_on.get() and action_target is None
-                            and self.pert_feat.get() == cl_name
-                         else clean_series)
-
-        if self.ext_plot_fig is None:
-            self.ext_plot_fig, self.ext_plot_ax = plt.subplots(
-                figsize=(10, 2.5), facecolor=BG_CARD)
-            self.ext_plot_fig.subplots_adjust(
-                left=0.05, right=0.99, top=0.80, bottom=0.22)
-
-        ax = self.ext_plot_ax; ax.cla()
-        t  = np.arange(len(clean_series))
-        ax.plot(t, clean_series, color=BLUE,   linewidth=1.4,
-                label="clean", alpha=0.9)
-        ax.plot(t, pert_series,  color=ORANGE, linewidth=1.4,
-                label=f"perturbed (Δ={delta:+.2f})",
-                linestyle="--", alpha=0.9)
-        ax.set_title(cl_name, fontsize=10, pad=4)
-        ax.set_xlabel("timestep", fontsize=8)
-        ax.tick_params(labelsize=7)
-        ax.legend(fontsize=8, loc="upper right")
-        ax.set_facecolor("#FAFAFA")
-        for s in ax.spines.values(): s.set_edgecolor("#DDDDDD")
-
-        if self.ext_plot_canvas is None:
-            self.ext_plot_canvas = FigureCanvasTkAgg(
-                self.ext_plot_fig, master=self.ext_plot_inner)
-            self.ext_plot_canvas.get_tk_widget()\
-                .pack(fill="both", expand=True, padx=4, pady=(0, 6))
-        self.ext_plot_canvas.draw()
-        self.dataset_status.config(text=f"Plotting: {cl_name}", fg="#5856D6")
-        log(self.console, f"Grafico dataset: {cl_name}  Δ={delta:+.2f}")
-
-    def update_ext_plot_if_active(self):
-        if self.dataset_df is not None and self.ext_plot_fig is not None:
-            self._draw_ext_plot()
-
-    # ── Simulation Plot ───────────────────────────────────────────────────────
+    # ── Simulation CSV → plot ─────────────────────────────────────────────────
     def _load_sim_for_plot(self, path: str):
         try:
             self.sim_df = pd.read_csv(path)
-            available   = [c for c in SIM_PLOT_CHOICES
-                           if c in self.sim_df.columns]
-            self.sim_col_combo["values"] = available
-            if available:
-                self.sim_plot_col_var.set(available[0])
-            if self.sim_plot_placeholder is not None:
-                self.sim_plot_placeholder.pack_forget()
-                self.sim_plot_placeholder = None
+            # aggiorna i valori del combobox con le colonne disponibili
+            all_choices = OBS_NAMES + SIM_PLOT_CHOICES
+            available   = list(dict.fromkeys(  # dedup preserving order
+                c for c in all_choices if c in self.sim_df.columns))
+            if self.sim_col_combo is not None:
+                self.sim_col_combo["values"] = available
             self.sim_status_lbl.config(
                 text=f"Loaded: {os.path.basename(path)}", fg="#5856D6")
             log(self.console,
-                f"Sim plot ready — {len(self.sim_df)} steps "
+                f"Sim plot ready - {len(self.sim_df)} steps "
                 f"in {os.path.basename(path)}")
+            self._draw_unified_plot()
         except Exception as e:
             log(self.console, f"Errore lettura sim file: {e}")
 
@@ -573,61 +534,76 @@ class App:
         if not path: return
         self._load_sim_for_plot(path)
 
-    def _draw_sim_plot(self):
-        if self.sim_df is None:
-            log(self.console, "Nessuna simulazione caricata."); return
-        col = self.sim_plot_col_var.get()
-        if col not in self.sim_df.columns:
-            log(self.console, f"Colonna '{col}' non presente nel file."); return
+    # ── Unified plot ──────────────────────────────────────────────────────────
+    def _draw_unified_plot(self):
+        col = self.unified_plot_col_var.get()
 
-        if self.sim_plot_placeholder is not None:
-            self.sim_plot_placeholder.pack_forget()
-            self.sim_plot_placeholder = None
+        # Recupera serie baseline dal dataset statico
+        baseline_series = None
+        if self.dataset_df is not None:
+            cl_name  = col
+            csv_name = CL_TO_CSV.get(cl_name, cl_name)
+            col_key  = (csv_name if csv_name in self.dataset_df.columns
+                        else cl_name if cl_name in self.dataset_df.columns
+                        else None)
+            if col_key is not None:
+                baseline_series = self.dataset_df[col_key].values.astype(float)
 
-        series = self.sim_df[col].values.astype(float)
-        steps  = (self.sim_df["step"].values
+        # Recupera serie simulazione
+        sim_series = None
+        if self.sim_df is not None and col in self.sim_df.columns:
+            sim_series = self.sim_df[col].values.astype(float)
+
+        if baseline_series is None and sim_series is None:
+            log(self.console, f"Nessun dato disponibile per la colonna '{col}'.")
+            return
+
+        # Nasconde placeholder
+        if self.unified_placeholder is not None:
+            self.unified_placeholder.pack_forget()
+            self.unified_placeholder = None
+
+        # Crea figura al primo utilizzo
+        if self.unified_plot_fig is None:
+            self.unified_plot_fig, self.unified_plot_ax = plt.subplots(
+                figsize=(10, 2.8), facecolor=BG_CARD)
+            self.unified_plot_fig.subplots_adjust(
+                left=0.05, right=0.99, top=0.80, bottom=0.22)
+
+        ax = self.unified_plot_ax
+        ax.cla()
+
+        if baseline_series is not None:
+            t = np.arange(len(baseline_series))
+            ax.plot(t, baseline_series, color=BLUE, linewidth=1.4,
+                    label=f"{col} (baseline)", alpha=0.9)
+
+        if sim_series is not None:
+            t2 = (self.sim_df["step"].values
                   if "step" in self.sim_df.columns
-                  else np.arange(len(series)))
-
-        # Se la colonna è _clean, mostra anche _pert sovrapposta (e viceversa)
-        is_clean  = col.endswith("_clean")
-        is_pert   = col.endswith("_pert")
-        base      = col[:-6] if is_clean else (col[:-5] if is_pert else None)
-        twin_col  = None
-        if is_clean and f"{base}_pert"  in self.sim_df.columns:
-            twin_col = f"{base}_pert"
-        if is_pert  and f"{base}_clean" in self.sim_df.columns:
-            twin_col = f"{base}_clean"
-
-        if self.sim_plot_fig is None:
-            self.sim_plot_fig, self.sim_plot_ax = plt.subplots(
-                figsize=(10, 2.5), facecolor=BG_CARD)
-            self.sim_plot_fig.subplots_adjust(
-                left=0.06, right=0.99, top=0.80, bottom=0.22)
-
-        ax = self.sim_plot_ax; ax.cla()
-        ax.plot(steps, series, color=BLUE, linewidth=1.4,
-                label=col, alpha=0.9)
-        if twin_col is not None:
-            twin_series = self.sim_df[twin_col].values.astype(float)
-            ax.plot(steps, twin_series, color=ORANGE, linewidth=1.4,
-                    label=twin_col, linestyle="--", alpha=0.9)
+                  else np.arange(len(sim_series)))
+            ax.plot(t2, sim_series, color=ORANGE, linewidth=1.4,
+                    label=f"{col} (sim)", linestyle="--", alpha=0.9)
 
         ax.set_title(col, fontsize=10, pad=4)
-        ax.set_xlabel("step", fontsize=8)
+        ax.set_xlabel("timestep", fontsize=8)
         ax.tick_params(labelsize=7)
         ax.legend(fontsize=8, loc="upper right")
         ax.set_facecolor("#FAFAFA")
-        for s in ax.spines.values(): s.set_edgecolor("#DDDDDD")
+        for s in ax.spines.values():
+            s.set_edgecolor("#DDDDDD")
 
-        if self.sim_plot_canvas is None:
-            self.sim_plot_canvas = FigureCanvasTkAgg(
-                self.sim_plot_fig, master=self.sim_plot_inner)
-            self.sim_plot_canvas.get_tk_widget()\
+        if self.unified_plot_canvas is None:
+            self.unified_plot_canvas = FigureCanvasTkAgg(
+                self.unified_plot_fig, master=self.unified_plot_inner)
+            self.unified_plot_canvas.get_tk_widget()\
                 .pack(fill="both", expand=True, padx=4, pady=(0, 6))
-        self.sim_plot_canvas.draw()
-        log(self.console, f"Sim plot: {col}"
-            + (f" vs {twin_col}" if twin_col else ""))
+        self.unified_plot_canvas.draw()
+
+        parts = []
+        if baseline_series is not None: parts.append("baseline")
+        if sim_series       is not None: parts.append("sim")
+        log(self.console, f"Plot aggiornato: {col} [{', '.join(parts)}]")
 
     # ── Perturbation ──────────────────────────────────────────────────────────
     def entry_changed(self):
@@ -647,14 +623,12 @@ class App:
         log(self.console,
             f"Perturbation active: {self.pert_feat.get()} {v:+.2f}")
         self.refresh(); self.update_pert_lbl()
-        self.update_ext_plot_if_active()
 
     def clear_pert(self):
         self.pert_on.set(False); self.pert_amount.set(0.0)
         self.entry.delete(0, "end"); self.entry.insert(0, "0.00")
         log(self.console, "Perturbation cleared.")
         self.refresh(); self.update_pert_lbl()
-        self.update_ext_plot_if_active()
 
     def update_pert_lbl(self):
         if self.pert_on.get():
@@ -679,7 +653,6 @@ class App:
         body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         body.rowconfigure(0, weight=2)
         body.rowconfigure(1, weight=1)
-        body.rowconfigure(2, weight=1)
         body.columnconfigure(0, weight=2)
         body.columnconfigure(1, weight=3)
         body.columnconfigure(2, weight=3)
@@ -687,15 +660,14 @@ class App:
         self.build_left(body)
         self.build_center(body)
         self.build_right(body)
-        self.build_ext_plot(body)
-        self.build_sim_plot(body)
+        self.build_unified_plot(body)
 
     def build_left(self, parent):
         _, inner = card(parent, "Controls", col=0, row=0)
 
         ctrl = section(inner, "Controller")
-        for text, val in [("RBC (AdvancedRBC)",               "rbc"),
-                          ("Neural policy (LinearRegressor)",  "neural")]:
+        for text, val in [("RBC (AdvancedRBC)", "rbc"),
+                          ("Neural policy (LinearRegressor)", "neural")]:
             tk.Radiobutton(ctrl, text=text, variable=self.policy_var,
                            value=val, command=self.refresh, bg=BG_CARD,
                            font=("Helvetica", 11))\
@@ -708,7 +680,7 @@ class App:
         self.neural_status = lbl(trn, "Status: not loaded", fg="gray")
         self.neural_status.pack(fill="x", padx=8, pady=(0, 10))
 
-        ds = section(inner, "Dataset (static)")
+        ds = section(inner, "Dataset (baseline)")
         btn(ds, "Load dataset", self.load_dataset, "#5856D6", width=18)\
             .pack(anchor="w", padx=8, pady=(10, 6))
         self.dataset_status = lbl(ds, "No dataset loaded", fg="gray")
@@ -730,8 +702,8 @@ class App:
                               relief="solid", bd=1, justify="center")
         self.entry.insert(0, "0.00")
         self.entry.pack(side="left", padx=(0, 8), ipady=5)
-        self.entry.bind("<Return>",   lambda e: self.entry_changed())
-        self.entry.bind("<FocusOut>", lambda e: self.entry_changed())
+        self.entry.bind("<Return>",    lambda e: self.entry_changed())
+        self.entry.bind("<FocusOut>",  lambda e: self.entry_changed())
         lbl(er, "press Enter to update", fg="gray", size=10).pack(side="left")
         br = tk.Frame(pb, bg=BG_CARD)
         br.pack(fill="x", padx=8, pady=(0, 8))
@@ -745,19 +717,15 @@ class App:
         sim = section(inner, "Simulation")
         r1 = tk.Frame(sim, bg=BG_CARD)
         r1.pack(fill="x", padx=8, pady=(10, 6))
-        btn(r1, "Start", self.start, BLUE,  width=12).pack(side="left",
-                                                            padx=(0, 8))
-        btn(r1, "Stop",  self.stop,  RED,   width=12).pack(side="left")
+        btn(r1, "Start", self.start, BLUE,        width=12).pack(side="left", padx=(0, 8))
+        btn(r1, "Stop",  self.stop,  RED,          width=12).pack(side="left")
         r2 = tk.Frame(sim, bg=BG_CARD)
         r2.pack(fill="x", padx=8, pady=(0, 10))
-        btn(r2, "Step",  self.step,      GREEN, width=12).pack(side="left",
-                                                                padx=(0, 8))
-        btn(r2, "Reset", self.reset_env, GRAY,  fg="black", width=12)\
-            .pack(side="left")
+        btn(r2, "Step",  self.step,      GREEN,        width=12).pack(side="left", padx=(0, 8))
+        btn(r2, "Reset", self.reset_env, GRAY, fg="black", width=12).pack(side="left")
 
     def build_center(self, parent):
-        _, inner = card(parent, "Action comparison", col=1, row=0,
-                        padx=(6, 6))
+        _, inner = card(parent, "Action comparison", col=1, row=0, padx=(6, 6))
         tbl = tk.Frame(inner, bg=BG_CARD)
         tbl.pack(fill="both", expand=True)
         for c in range(4): tbl.columnconfigure(c, weight=1)
@@ -771,8 +739,7 @@ class App:
             tk.Label(tbl, text=h, bg=bg, fg=fg,
                      font=("Helvetica", 12, "bold"),
                      anchor="center", pady=10)\
-                .grid(row=0, column=col, sticky="ew",
-                      padx=(0, 4), pady=(0, 8))
+                .grid(row=0, column=col, sticky="ew", padx=(0, 4), pady=(0, 8))
 
         for row, dev in enumerate(ACTION_NAMES, start=1):
             lbl(tbl, dev, bold=True, size=12, padx=10)\
@@ -788,7 +755,7 @@ class App:
                           anchor="center", pady=20)
             pl.grid(row=row, column=2, sticky="ew", padx=(0, 4), pady=(0, 8))
             self.pert_lbl[dev] = pl
-            dl = tk.Label(tbl, text="Δ 0.000", bg=BG_CARD, fg=GREEN,
+            dl = tk.Label(tbl, text="D 0.000", bg=BG_CARD, fg=GREEN,
                           font=("Helvetica", 16, "bold"),
                           anchor="center", pady=20)
             dl.grid(row=row, column=3, sticky="ew", padx=(0, 4), pady=(0, 8))
@@ -797,9 +764,9 @@ class App:
         leg = tk.Frame(inner, bg=BG_CARD)
         leg.pack(fill="x", pady=(12, 0))
         for color, label, desc in [
-            (GREEN,  "Δ < 0.05",    "robust"),
-            (ORANGE, "Δ 0.05–0.20", "sensitive"),
-            (RED,    "Δ > 0.20",    "fragile"),
+            (GREEN,  "D < 0.05",    "robust"),
+            (ORANGE, "D 0.05-0.20", "sensitive"),
+            (RED,    "D > 0.20",    "fragile"),
         ]:
             lbl(leg, label, fg=color, bold=True, size=11)\
                 .pack(side="left", padx=(0, 4))
@@ -834,53 +801,46 @@ class App:
         log(self.console, "Load the neural policy before switching to it.")
         log(self.console, "Set a perturbation and press Apply to test robustness.")
 
-    def build_ext_plot(self, parent):
+    def build_unified_plot(self, parent):
+        """Pannello plot unificato: baseline (blu) + sim (arancione)."""
         outer, inner = card(parent,
-                            "Dataset plot — clean vs perturbed (static)",
+                            "Dataset plot — baseline vs simulation",
                             col=0, row=1, padx=(0, 0), colspan=3)
         outer.grid(pady=(6, 0))
-        self.ext_plot_inner = inner
-        self.ext_placeholder = lbl(
-            inner,
-            "Load a dataset CSV and choose an observation to display the plot here.",
-            fg="gray", size=11, anchor="center")
-        self.ext_placeholder.pack(expand=True, fill="both", pady=20)
+        self.unified_plot_inner = inner
 
-    def build_sim_plot(self, parent):
-        outer, inner = card(parent,
-                            "Simulation plot — from recorded run",
-                            col=0, row=2, padx=(0, 0), colspan=3)
-        outer.grid(pady=(6, 0))
-        self.sim_plot_inner = inner
-
+        # Barra di controllo
         ctrl_bar = tk.Frame(inner, bg=BG_CARD)
         ctrl_bar.pack(fill="x", pady=(0, 6))
 
         lbl(ctrl_bar, "Column:", fg="gray", size=11)\
             .pack(side="left", padx=(0, 6))
+
+        all_choices = list(dict.fromkeys(OBS_NAMES + SIM_PLOT_CHOICES))
         self.sim_col_combo = ttk.Combobox(
-            ctrl_bar, textvariable=self.sim_plot_col_var,
-            values=SIM_PLOT_CHOICES, state="readonly",
+            ctrl_bar, textvariable=self.unified_plot_col_var,
+            values=all_choices, state="readonly",
             font=("Helvetica", 11), width=32)
         self.sim_col_combo.pack(side="left", padx=(0, 10))
         self.sim_col_combo.bind("<<ComboboxSelected>>",
-                                lambda e: self._draw_sim_plot())
+                                lambda e: self._draw_unified_plot())
 
-        btn(ctrl_bar, "Plot", self._draw_sim_plot, BLUE, width=8)\
+        btn(ctrl_bar, "Plot", self._draw_unified_plot, BLUE, width=8)\
             .pack(side="left", padx=(0, 10))
         btn(ctrl_bar, "Load sim file", self.load_sim_file,
             "#5856D6", width=14).pack(side="left", padx=(0, 10))
 
-        self.sim_status_lbl = lbl(ctrl_bar, "No simulation loaded yet.",
+        self.sim_status_lbl = lbl(ctrl_bar,
+                                  "No simulation loaded yet.",
                                   fg="gray", size=10)
         self.sim_status_lbl.pack(side="left")
 
-        self.sim_plot_placeholder = lbl(
+        # Placeholder
+        self.unified_placeholder = lbl(
             inner,
-            "Run a simulation (Start → Stop) or load a sim CSV "
-            "to display the plot here.",
+            "Load a dataset CSV (baseline) and/or a simulation CSV to display the plot here.",
             fg="gray", size=11, anchor="center")
-        self.sim_plot_placeholder.pack(expand=True, fill="both", pady=20)
+        self.unified_placeholder.pack(expand=True, fill="both", pady=20)
 
     def mainloop(self):
         self.root.mainloop()
