@@ -18,7 +18,7 @@ try:
 except Exception as e:
     CITYLEARN_AVAILABLE = False
     CITYLEARN_ERROR = str(e)
-    AdvancedRBC = CityLearnEnv = None
+    AdvancedRBC = CityLearnEnv = default_env_config = None
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -96,22 +96,12 @@ CL_TO_CSV = {
 CL_TO_LR = CL_TO_CSV
 DEFAULT_DATASET = "citylearn_challenge_2023_phase_1"
 
-# Colonne CSV di simulazione
-SIM_ACT_COLS = (
-    [f"{a}_clean" for a in ACTION_NAMES] +
-    [f"{a}_pert"  for a in ACTION_NAMES] +
-    [f"{a}_delta" for a in ACTION_NAMES]
-)
+SIM_ACT_COLS = []
 SIM_META_COLS = ["pert_feat", "pert_amount"]
 SIM_ALL_COLS  = (["step", "policy", "reward"] +
                  OBS_NAMES + SIM_ACT_COLS + SIM_META_COLS)
 
-SIM_PLOT_CHOICES = (
-    OBS_NAMES +
-    [f"{a}_clean" for a in ACTION_NAMES] +
-    [f"{a}_pert"  for a in ACTION_NAMES] +
-    [f"{a}_delta" for a in ACTION_NAMES]
-)
+SIM_PLOT_CHOICES = OBS_NAMES
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log(widget, msg):
@@ -139,7 +129,7 @@ def diff_color(d):
 def lbl(parent, text, fg="black", bold=False, size=11, anchor="w", **kw):
     return tk.Label(parent, text=text, bg=BG_CARD, fg=fg,
                     font=("Helvetica", size, "bold" if bold else "normal"),
-                    anchor=anchor, **kw)
+                    anchor="w", **kw)
 
 def section(parent, title):
     f = tk.LabelFrame(parent, text=title, bg=BG_CARD,
@@ -164,16 +154,17 @@ class NeuralPolicy:
         self.ready    = False
         self.models   = {}
         self.features = {}
-        self.mean = self.std = None
+        self.mean: np.ndarray = np.array([])
+        self.std: np.ndarray = np.array([])
 
     def load(self, directory: str):
         if lr is None:
-            return False, "linear_regressor.py non importabile"
+            return False, "Can't import linear_regressor.py"
         try:
             mean_path = os.path.join(directory, "feature_mean.npy")
             std_path  = os.path.join(directory, "feature_std.npy")
             if not os.path.exists(mean_path) or not os.path.exists(std_path):
-                return False, "feature_mean.npy / feature_std.npy non trovati"
+                return False, "feature_mean.npy / feature_std.npy not found"
             self.mean = np.load(mean_path)
             self.std  = np.load(std_path)
             self.std[self.std == 0] = 1.0
@@ -181,7 +172,7 @@ class NeuralPolicy:
             for target in lr.TARGET_COLS:
                 pth_path = os.path.join(directory, f"model_{target}.pth")
                 if not os.path.exists(pth_path):
-                    return False, f"File mancante: model_{target}.pth"
+                    return False, f"Missing file: model_{target}.pth"
                 domain_feats = lr.DOMAIN_FEATURES[target]
                 is_storage   = target in ("dhw_storage", "electrical_storage")
                 model = lr.LinearRegressor(input_dim=len(domain_feats),
@@ -194,12 +185,12 @@ class NeuralPolicy:
             self.models   = models
             self.features = features
             self.ready    = True
-            return True, f"Modello caricato da: {os.path.basename(directory)}"
+            return True, f"Model loaded from: {os.path.basename(directory)}"
         except Exception as e:
-            return False, f"Errore caricamento: {e}"
+            return False, f"Loading error: {e}"
 
     def predict(self, obs):
-        if not self.ready:
+        if not self.ready or lr is None:
             return {a: 0.0 for a in ACTION_NAMES}
         lr_obs  = {v: float(obs.get(k, 0.0)) for k, v in CL_TO_LR.items()}
         f_cols  = list(lr.FEATURE_COLS)
@@ -222,12 +213,13 @@ class Redirector(io.StringIO):
         self.widget = widget
         self.buf    = ""
 
-    def write(self, text):
+    def write(self, text) -> int:
         self.buf += text
         while "\n" in self.buf:
             line, self.buf = self.buf.split("\n", 1)
             if line.strip():
                 log(self.widget, line.rstrip())
+        return len(text) # Avoids warning
 
     def flush(self):
         if self.buf.strip():
@@ -259,14 +251,14 @@ class App:
         self.stop_req    = False
         self.step_n      = 0
 
-        # ── Dataset baseline (pannello sinistro)
+        # ── Baseline dataset
         self.dataset_df       = None      # DataFrame baseline
         self.ext_plot_obs_var = tk.StringVar(value=OBS_NAMES[0])
 
-        # ── Dataset simulazione (secondo dataset)
+        # ── Simulation dataset
         self.sim_df = None                # DataFrame sim CSV
 
-        # ── Pannello plot unificato
+        # ── Plot panel
         self.unified_plot_canvas  = None
         self.unified_plot_fig     = None
         self.unified_plot_ax      = None
@@ -274,21 +266,23 @@ class App:
         self.unified_plot_col_var = tk.StringVar(value=OBS_NAMES[0])
         self.sim_col_combo        = None   # riferimento al widget Combobox
 
-        # ── Registrazione simulazione
+        # ── Record simulation
         self._sim_file   = None
         self._sim_writer = None
         self._sim_path   = ""
 
         self.build()
         self.init_env()
+        self._auto_load_model()
 
     # ── Environment ──────────────────────────────────────────────────────────
     def init_env(self):
         if not CITYLEARN_AVAILABLE:
             log(self.console, f"ERROR CityLearn: {CITYLEARN_ERROR}"); return
+        assert default_env_config is not None and CityLearnEnv is not None and AdvancedRBC is not None
         try:
             log(self.console, "Initialising CityLearn environment...")
-            schema   = default_env_config(DEFAULT_DATASET)
+            schema   = default_env_config(DEFAULT_DATASET) # type: ignore
             self.env = CityLearnEnv(schema=schema, central_agent=True)
             self.rbc = AdvancedRBC(self.env)
             self.store(self.env.reset()[0])
@@ -312,6 +306,7 @@ class App:
 
     def store(self, obs):
         self.obs   = obs
+        assert self.rbc is not None
         names      = self.rbc.observation_names[0]
         self.obs_dict = {n: obs[0][i] for i, n in enumerate(names)}
 
@@ -360,7 +355,7 @@ class App:
     # ── CSV Logging ───────────────────────────────────────────────────────────
     def _open_sim_file(self):
         ts     = datetime.now().strftime("%d%m%Y_%H%M")
-        policy = "rbc" if self.policy_var.get() == "rbc" else "neural"
+        policy = "rbc" if self.policy_var.get() == "rbc" else "linearregressor"
         sim_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "simulations")
         os.makedirs(sim_dir, exist_ok=True)
@@ -379,9 +374,15 @@ class App:
             log(self.console, f"Simulation saved: {self._sim_path}")
             self._load_sim_for_plot(self._sim_path)
 
-    def _write_sim_row(self, reward, c, p):
-        if self._sim_writer is None:
+    def _write_sim_row(self, reward, obs_snap=None):
+        if self._sim_writer is None or self._sim_file is None:
             return
+        snap = dict(obs_snap) if obs_snap is not None else dict(self.obs_dict)
+        # Applica la perturbazione osservazionale allo snapshot prima di salvare
+        if self.pert_on.get() and not self.is_action_perturb():
+            f = self.pert_feat.get()
+            if f in snap:
+                snap[f] = snap[f] + self.pert_amount.get()
         row = {
             "step":        self.step_n,
             "policy":      self.policy_var.get(),
@@ -390,11 +391,7 @@ class App:
             "pert_amount": self.pert_amount.get() if self.pert_on.get() else 0.0,
         }
         for n in OBS_NAMES:
-            row[n] = round(self.obs_dict.get(n, 0.0), 6)
-        for a in ACTION_NAMES:
-            row[f"{a}_clean"] = round(c[a], 6)
-            row[f"{a}_pert"]  = round(p[a], 6)
-            row[f"{a}_delta"] = round(abs(p[a] - c[a]), 6)
+            row[n] = round(snap.get(n, 0.0), 6)
         self._sim_writer.writerow(row)
         self._sim_file.flush()
 
@@ -407,6 +404,7 @@ class App:
         action_list = [[acts[a] for a in ACTION_NAMES]]
         try:
             obs, reward, term, trunc, _ = self.env.step(action_list)
+            obs_snap = dict(self.obs_dict)
             self.store(obs)
             self.step_n += 1
             ctrl = "Neural" if self.policy_var.get() == "neural" else "RBC"
@@ -417,13 +415,16 @@ class App:
                     log(self.console,
                         f"  ! {dev} clean={c[dev]:.3f} "
                         f"perturbed={p[dev]:.3f} D={d:.3f}")
-            self._write_sim_row(reward[0], c, p)
+            self._write_sim_row(reward[0], obs_snap)
             self.update_obs(); self.refresh()
             if term or trunc:
                 log(self.console, "Episode finished.")
                 self.stop_req = True
         except Exception as e:
             log(self.console, f"  skip step {self.step_n + 1}: {e}")
+            self.step_n += 1            
+            self._write_sim_row(0.0)
+            self.root.update_idletasks() 
 
     def start(self):
         if self.running:
@@ -450,17 +451,45 @@ class App:
         self.stop_req = True
 
     # ── Load model ────────────────────────────────────────────────────────────
+    _MODEL_SEARCH_DIR = ["../linear_regressor_results"]
+        
+    def _auto_load_model(self):
+        """
+        Tries to load the neural model automatically at startup
+        """
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        for rel in self._MODEL_SEARCH_DIR:
+            directory = os.path.normpath(os.path.join(script_dir, rel))
+            mean_ok = os.path.exists(os.path.join(directory, "feature_mean.npy"))
+            std_ok = os.path.exists(os.path.join(directory, "feature_std.npy"))
+            log(self.console, f"[auto-load] trying {directory} (mean={mean_ok}, std={std_ok})")
+            if mean_ok and std_ok:
+                log(self.console, f"Auto-loading neural model from: {directory}...")
+                ok, msg = self.neural.load(directory)
+                self.neural_status.config(text=f"Status: {msg}",
+                                          fg=GREEN if ok else RED)
+                log(self.console, msg)
+                return
+        
+        log(self.console,
+            "Neural model not found automatically "
+            f"(searched: {', '.join(self._MODEL_SEARCH_DIR)}). "
+            "Use 'Load model' to select it manually.")
+        
     def load_model(self):
+        """
+        Manual override: let the user pick a different model directory.
+        """
         directory = filedialog.askdirectory(
-            title="Seleziona la cartella del modello (contiene i .pth e i .npy)")
+            title="Choose folder...")
         if not directory: return
-        log(self.console, f"Caricamento modello da: {directory} ...")
+        log(self.console, f"Loading neural model from: {directory} ...")
         ok, msg = self.neural.load(directory)
         self.neural_status.config(text=f"Status: {msg}",
-                                  fg=GREEN if ok else RED)
+                                fg=GREEN if ok else RED)
         log(self.console, msg)
 
-    # ── Dataset baseline (pannello sinistro) ──────────────────────────────────
+    # ── Baseline dataset (ledt sinistro) ──────────────────────────────────────
     def load_dataset(self):
         path = filedialog.askopenfilename(
             title="Seleziona il dataset CSV (baseline)",
@@ -512,7 +541,7 @@ class App:
     def _load_sim_for_plot(self, path: str):
         try:
             self.sim_df = pd.read_csv(path)
-            # aggiorna i valori del combobox con le colonne disponibili
+            # Updates combobox values with available columns
             all_choices = OBS_NAMES + SIM_PLOT_CHOICES
             available   = list(dict.fromkeys(  # dedup preserving order
                 c for c in all_choices if c in self.sim_df.columns))
@@ -538,39 +567,43 @@ class App:
     def _draw_unified_plot(self):
         col = self.unified_plot_col_var.get()
 
-        # Recupera serie baseline dal dataset statico
         baseline_series = None
-        if self.dataset_df is not None:
+        df_d = self.dataset_df # Capture the reference locally (Warning handling)
+        if df_d is not None:
             cl_name  = col
             csv_name = CL_TO_CSV.get(cl_name, cl_name)
-            col_key  = (csv_name if csv_name in self.dataset_df.columns
-                        else cl_name if cl_name in self.dataset_df.columns
+            col_key  = (csv_name if csv_name in df_d.columns
+                        else cl_name if cl_name in df_d.columns
                         else None)
             if col_key is not None:
-                baseline_series = self.dataset_df[col_key].values.astype(float)
+                baseline_series = df_d[col_key].to_numpy(dtype=float)
 
-        # Recupera serie simulazione
         sim_series = None
-        if self.sim_df is not None and col in self.sim_df.columns:
-            sim_series = self.sim_df[col].values.astype(float)
+        df_s = self.sim_df # Capture the reference locally (Warning handling)
+        if df_s is not None and col in df_s.columns:
+            sim_series = df_s[col].to_numpy(dtype=float)
+
 
         if baseline_series is None and sim_series is None:
-            log(self.console, f"Nessun dato disponibile per la colonna '{col}'.")
+            log(self.console, f"No data available for column: '{col}'.")
             return
 
-        # Nasconde placeholder
+        # Hides placeholder
         if self.unified_placeholder is not None:
             self.unified_placeholder.pack_forget()
             self.unified_placeholder = None
 
-        # Crea figura al primo utilizzo
         if self.unified_plot_fig is None:
             self.unified_plot_fig, self.unified_plot_ax = plt.subplots(
                 figsize=(10, 2.8), facecolor=BG_CARD)
             self.unified_plot_fig.subplots_adjust(
                 left=0.05, right=0.99, top=0.80, bottom=0.22)
+        
+        if self.unified_plot_ax is None:
+            return
 
         ax = self.unified_plot_ax
+        if ax is None: return # Guard to stop "None" attribute errors
         ax.cla()
 
         if baseline_series is not None:
@@ -578,9 +611,9 @@ class App:
             ax.plot(t, baseline_series, color=BLUE, linewidth=1.4,
                     label=f"{col} (baseline)", alpha=0.9)
 
-        if sim_series is not None:
-            t2 = (self.sim_df["step"].values
-                  if "step" in self.sim_df.columns
+        if sim_series is not None and df_s is not None:
+            t2 = (df_s["step"].to_numpy()
+                  if "step" in df_s.columns
                   else np.arange(len(sim_series)))
             ax.plot(t2, sim_series, color=ORANGE, linewidth=1.4,
                     label=f"{col} (sim)", linestyle="--", alpha=0.9)
@@ -804,12 +837,12 @@ class App:
     def build_unified_plot(self, parent):
         """Pannello plot unificato: baseline (blu) + sim (arancione)."""
         outer, inner = card(parent,
-                            "Dataset plot — baseline vs simulation",
+                            "Dataset plot (baseline vs simulation)",
                             col=0, row=1, padx=(0, 0), colspan=3)
         outer.grid(pady=(6, 0))
         self.unified_plot_inner = inner
 
-        # Barra di controllo
+        # Control bar
         ctrl_bar = tk.Frame(inner, bg=BG_CARD)
         ctrl_bar.pack(fill="x", pady=(0, 6))
 
