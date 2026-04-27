@@ -178,7 +178,7 @@ def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
 
         ax1.plot(time_steps, indoor_temp_reg,
                  label='Indoor Temp (Regressor)', linewidth=1.5,
-                 color='tab:blue', linestyle='--', alpha=0.7)
+                 color='tab:orange', linestyle='--', alpha=0.7) # Different colour for better visualisaton
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(lines1, labels1, loc='upper right')
@@ -208,7 +208,7 @@ def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
     ax1.set_title('DHW Storage — State of Charge')
 
     ax1.plot(time_steps, soc_rbc,
-             label='DHW SoC (RBC)', linewidth=1.5, color='tab:blue')
+             label='DHW SoC (RBC)', linewidth=1.5, color='tab:green')
     ax1.set_ylabel('State of Charge (kWh/kWh_capacity)')
     ax1.set_xlabel('Time Step (Hours)')
     ax1.grid(True, alpha=0.3)
@@ -220,7 +220,7 @@ def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
 
         ax1.plot(time_steps, soc_reg,
                  label='DHW SoC (Regressor)', linewidth=1.5,
-                 color='tab:blue', linestyle='--', alpha=0.7)
+                 color='tab:red', linestyle='--', alpha=0.7) # Different colour for better visualisaton
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(lines1, labels1, loc='upper right')
@@ -260,7 +260,7 @@ def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage
 
         ax1.plot(time_steps, soc_reg,
                  label='Electrical SoC (Regressor)', linewidth=1.5,
-                 color='tab:orange', linestyle='--', alpha=0.7)
+                 color='tab:blue', linestyle='--', alpha=0.7) # Different colour for better visualisaton
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(lines1, labels1, loc='upper right')
