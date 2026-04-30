@@ -242,6 +242,7 @@ class Redirector(io.StringIO):
 class App:
     def __init__(self, root):
         self.root = root
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.title("RBC vs Neural Policy")
         self.root.geometry("1900x1200")
         self.root.minsize(1600, 950)
@@ -253,6 +254,7 @@ class App:
         self.env    = None; self.rbc = None
         self.obs    = None; self.obs_dict = {}
         self.neural = NeuralPolicy()
+        self.neural_status = tk.Label(self.root)  # Placeholder
 
         self.policy_var = tk.StringVar(value="rbc")
         self.running    = False
@@ -322,6 +324,9 @@ class App:
 
     def store(self, obs):
         self.obs   = obs
+        if self.rbc is None:
+            log(self.console, "Error: RBC not initialised.")
+            return
         assert self.rbc is not None
         names = self.rbc.observation_names[0]
         self.obs_dict = {n: obs[0][i] for i, n in enumerate(names)}
@@ -356,20 +361,23 @@ class App:
         # Separate obs perturbations from action perturbations
         action_deltas: dict[str, float] = {}
         for p in self.pert_list:
-            feat   = p["feat"]
-            amount = p["amount"]
+            feat    = p["feat"]
+            amount  = p["amount"]
             action_target = ACTION_PERTURB_MAP.get(feat)
             if action_target is not None:
-                action_deltas[action_target] = action_deltas.get(action_target, 0.0) + amount
+                action_deltas[action_target] = amount
             else:
-                p_obs[feat] = p_obs.get(feat, 0.0) + amount
+                if p.get("mode") == "assign":
+                    p_obs[feat] = amount # Occupant count
+                else:
+                    p_obs[feat] = p_obs.get(feat, 0.0) + amount
 
         c = self.predict(c_obs)
         p = self.predict(p_obs)
 
         # Apply action-level perturbations on top of policy output
-        for act_name, delta in action_deltas.items():
-            p[act_name] = clamp(act_name, p[act_name] + delta)
+        for act_name, val in action_deltas.items():
+            p[act_name] = clamp(act_name, val)
 
         return c, p, c_obs, p_obs
 
@@ -448,8 +456,25 @@ class App:
         c, p, c_obs, p_obs = self.compute()
         acts        = p if self.pert_list else c
         action_list = [[acts[a] for a in ACTION_NAMES]]
+        
+        # Initialise to avoid unbound errors
+        obs_names = []
+
         try:
             obs, reward, term, trunc, _ = self.env.step(action_list)
+
+            # Use fix
+            building = self.env.buildings[0]
+
+            if self.rbc is not None:
+                obs_names = self.rbc.observation_names[0]
+            else:
+                log(self.console, "RBC controller not initialized.")
+                # Handle the fallback logic here
+
+            obs[0][obs_names.index('electrical_storage_soc')] = building.electrical_storage.soc[building.time_step - 1]
+            obs[0][obs_names.index('dhw_storage_soc')] = building.dhw_storage.soc[building.time_step - 1]
+            
             self.store(obs)
             self.step_n += 1
             ctrl = "Neural" if self.policy_var.get() == "neural" else "RBC"
@@ -470,7 +495,9 @@ class App:
         except Exception as e:
             log(self.console, f"  skip step {self.step_n + 1}: {e}")
             self.step_n += 1
-            self.root.update_idletasks()
+            self.stop_req = True
+            self.running = False
+            self._close_session()
 
     def start(self):
         if self.running:
@@ -520,7 +547,7 @@ class App:
         log(self.console,
             "Neural model not found automatically "
             f"(searched: {', '.join(self._MODEL_SEARCH_DIR)}). "
-            "Use 'Load model' to select it manually.")
+            "Please run linear_regressor.py first.")
 
     def load_model(self):
         directory = filedialog.askdirectory(title="Choose model folder...")
@@ -632,7 +659,7 @@ class App:
 
         if self.unified_plot_fig is None:
             self.unified_plot_fig, self.unified_plot_ax = plt.subplots(
-                figsize=(10, 2.8), facecolor=BG_CARD)
+                figsize=(10, 4.5), facecolor=BG_CARD)
             self.unified_plot_fig.subplots_adjust(
                 left=0.05, right=0.99, top=0.80, bottom=0.22)
 
@@ -681,10 +708,17 @@ class App:
             amount = float(self.pert_entry.get().replace(",", "."))
         except ValueError:
             log(self.console, "Invalid perturbation amount."); return
-        if amount == 0.0:
+        is_assign = feat in ACTION_PERTURB_MAP or feat == "occupant_count"
+        if amount == 0.0 and not is_assign:
             log(self.console, "Amount is 0 – nothing added."); return
-        self.pert_list.append({"feat": feat, "amount": amount})
-        log(self.console, f"Perturbation added: {feat} {amount:+.4f}")
+
+        # For features in "assign" mode, replace instead of append
+        if is_assign:
+            self.pert_list = [p for p in self.pert_list if p["feat"] != feat]
+
+        mode = "assign" if is_assign else "delta"
+        self.pert_list.append({"feat": feat, "amount": amount, "mode": mode})
+        log(self.console, f"Perturbation added: {feat} {'=' if mode == 'assign' else '+'}{amount:.4f}")
         self._rebuild_pert_list_ui()
         self.refresh()
 
@@ -717,10 +751,12 @@ class App:
             row_f = tk.Frame(self.pert_list_frame, bg=BG_CARD)
             row_f.pack(fill="x", pady=1)
             color = ORANGE if p["amount"] > 0 else BLUE
+            mode = p.get("mode", "delta")
+            sign = "=" if mode == "assign" else ("+" if p["amount"] >= 0 else "")
             tk.Label(row_f,
-                     text=f"{p['feat']}  {p['amount']:+.4f}",
-                     bg=BG_CARD, fg=color,
-                     font=("Helvetica", 10)).pack(side="left", padx=(4, 8))
+                    text=f"{p['feat']}  {sign}{p['amount']:.4f}",
+                    bg=BG_CARD, fg=color,
+                    font=("Helvetica", 10)).pack(side="left", padx=(4, 8))
             idx = i  # capture for lambda
             tk.Button(row_f, text="Remove", bg=BG_CARD, fg=RED,
                       relief="flat", bd=0, cursor="hand2",
@@ -745,7 +781,7 @@ class App:
         body = tk.Frame(self.root, bg=BG_APP)
         body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         body.rowconfigure(0, weight=2)
-        body.rowconfigure(1, weight=1)
+        body.rowconfigure(1, weight=2)
         body.columnconfigure(0, weight=2)
         body.columnconfigure(1, weight=3)
         body.columnconfigure(2, weight=3)
@@ -767,13 +803,6 @@ class App:
                            font=("Helvetica", 11)) \
                 .pack(anchor="w", padx=8,
                       pady=(8, 8) if val == "rbc" else (0, 8))
-
-        # Neural policy
-        trn = section(inner, "Neural policy")
-        btn(trn, "Load model", self.load_model, BLUE, width=18) \
-            .pack(anchor="w", padx=8, pady=(10, 6))
-        self.neural_status = lbl(trn, "Status: not loaded", fg="gray")
-        self.neural_status.pack(fill="x", padx=8, pady=(0, 10))
 
         # Dataset baseline
         ds = section(inner, "Dataset (baseline)")
@@ -952,6 +981,12 @@ class App:
             "Load a dataset CSV (baseline) and/or a simulation CSV to display the plot here.",
             fg="gray", size=11, anchor="center")
         self.unified_placeholder.pack(expand=True, fill="both", pady=20)
+        
+    def _on_close(self):
+        if self.unified_plot_fig is not None:
+            plt.close(self.unified_plot_fig)
+        self._close_session()
+        self.root.destroy()
 
     def mainloop(self):
         self.root.mainloop()
