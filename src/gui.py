@@ -153,7 +153,8 @@ def card(parent, title, col, row=0, padx=(0, 6), colspan=1):
                      highlightbackground="#D0D0D0", highlightthickness=1)
     outer.grid(row=row, column=col, columnspan=colspan,
                sticky="nsew", padx=padx)
-    lbl(outer, title, bold=True, size=13).pack(fill="x", padx=14, pady=(14, 6))
+    if title:
+        lbl(outer, title, bold=True, size=13).pack(fill="x", padx=14, pady=(14, 6))
     inner = tk.Frame(outer, bg=BG_CARD)
     inner.pack(fill="both", expand=True, padx=14, pady=(0, 14))
     return outer, inner
@@ -769,19 +770,13 @@ class App:
 
     # ── UI Build ──────────────────────────────────────────────────────────────
     def build(self):
-        self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
 
-        hdr = tk.Frame(self.root, bg=BG_CARD,
-                       highlightbackground="#D0D0D0", highlightthickness=1)
-        hdr.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
-        lbl(hdr, "RBC vs Neural Policy", bold=True, size=18) \
-            .pack(fill="x", padx=14, pady=(12, 12))
-
         body = tk.Frame(self.root, bg=BG_APP)
-        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        body.rowconfigure(0, weight=2)
-        body.rowconfigure(1, weight=2)
+        body.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        body.rowconfigure(0, weight=0)
+        body.rowconfigure(1, weight=1)
         body.columnconfigure(0, weight=2)
         body.columnconfigure(1, weight=3)
         body.columnconfigure(2, weight=3)
@@ -792,7 +787,7 @@ class App:
         self.build_unified_plot(body)
 
     def build_left(self, parent):
-        _, inner = card(parent, "Controls", col=0, row=0)
+        _, inner = card(parent, "", col=0, row=0)
 
         # Controller
         ctrl = section(inner, "Controller")
@@ -806,13 +801,21 @@ class App:
 
         # Dataset baseline
         ds = section(inner, "Dataset (baseline)")
-        btn(ds, "Load dataset", self.load_dataset, "#5856D6", width=18) \
-            .pack(anchor="w", padx=8, pady=(10, 6))
+
+        # riga orizzontale per i due bottoni
+        row = tk.Frame(ds, bg=BG_CARD)
+        row.pack(fill="x", padx=8, pady=(10, 6))
+
+        btn(row, "Load dataset", self.load_dataset, "#5856D6", width=12) \
+            .pack(side="left")
+
+        btn(row, "Change obs", self._show_ext_obs_picker, GRAY,
+            fg="black", width=12) \
+            .pack(side="left", padx=(8, 0))
+
+        # testo di stato sotto
         self.dataset_status = lbl(ds, "No dataset loaded", fg="gray")
-        self.dataset_status.pack(fill="x", padx=8, pady=(0, 4))
-        btn(ds, "Change obs", self._show_ext_obs_picker, GRAY,
-            fg="black", width=18) \
-            .pack(anchor="w", padx=8, pady=(0, 10))
+        self.dataset_status.pack(fill="x", padx=8, pady=(4, 10))
 
         # ── Perturbations ─────────────────────────────────────────────────────
         pb = section(inner, "Perturbations")
@@ -946,10 +949,8 @@ class App:
 
     def build_unified_plot(self, parent):
         """Unified plot: baseline (blue) + sim (orange)."""
-        outer, inner = card(parent,
-                            "Dataset plot (baseline vs simulation)",
-                            col=0, row=1, padx=(0, 0), colspan=3)
-        outer.grid(pady=(6, 0))
+        outer, inner = card(parent,"Dataset plot (baseline vs simulation)", col=0, row=1, padx=(0, 0), colspan=3)
+        outer.grid(pady=(6, 0), sticky="nsew")
         self.unified_plot_inner = inner
 
         ctrl_bar = tk.Frame(inner, bg=BG_CARD)
