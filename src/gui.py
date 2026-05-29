@@ -36,6 +36,7 @@ RED          = "#FF3B30"
 GREEN        = "#34C759"
 ORANGE       = "#FF9500"
 ORANGE_LIGHT = "#FFF4E0"
+PURPLE       = "#AF52DE"   # perturbed curve
 GRAY         = "#E5E5EA"
 
 OBS_NAMES = [
@@ -54,6 +55,27 @@ OBS_NAMES = [
     "dhw_demand",
 ]
 OBS_NAMES_DISPLAY = OBS_NAMES + ["comfort_band"]
+
+OBS_DISPLAY = {
+    "hour":                                          "hour",
+    "indoor_dry_bulb_temperature":                   "indoor_temp",
+    "indoor_dry_bulb_temperature_cooling_set_point": "cool_setpt",
+    "outdoor_dry_bulb_temperature":                  "out_temp",
+    "outdoor_dry_bulb_temperature_predicted_1":      "out_temp_pred1",
+    "cooling_demand":                                "cool_demand",
+    "electricity_pricing":                           "elec_price",
+    "carbon_intensity":                              "carbon_int",
+    "solar_generation":                              "solar_gen",
+    "occupant_count":                                "occupants",
+    "electrical_storage_soc":                        "batt_soc",
+    "dhw_storage_soc":                               "dhw_soc",
+    "dhw_demand":                                    "dhw_demand",
+}
+DISPLAY_TO_OBS      = {v: k for k, v in OBS_DISPLAY.items()}
+OBS_DISPLAY_CHOICES = [OBS_DISPLAY[n] for n in OBS_NAMES]
+# "reward" is plottable too (a single series, no clean/pert split) so runs can
+# be compared by their reward curve.
+PLOT_CHOICES        = OBS_DISPLAY_CHOICES + ["reward"]
 ACTION_NAMES  = ["cooling_device", "dhw_storage", "electrical_storage"]
 ACTION_RANGES = {
     "cooling_device":     (0.0,  1.0),
@@ -78,9 +100,12 @@ ACTION_PERTURB_MAP = {
 }
 PERTURB_TARGETS = OBS_PERTURB_TARGETS + list(ACTION_PERTURB_TARGETS.keys())
 
+PERTURB_DISPLAY = ([OBS_DISPLAY[o] for o in OBS_PERTURB_TARGETS]
+                   + list(ACTION_PERTURB_TARGETS.keys()))
+
 CL_TO_CSV = {
     "indoor_dry_bulb_temperature":               "indoor_temp",
-    "indoor_dry_bulb_temperature_cooling_set_point": "cooling_set_point",
+    "indoor_dry_bulb_temperature_cooling_set_point": "cooling_setpoint",
     "outdoor_dry_bulb_temperature":              "outdoor_temp",
     "outdoor_dry_bulb_temperature_predicted_1":  "outdoor_temp_predicted",
     "cooling_demand":                            "cooling_demand",
@@ -102,7 +127,7 @@ SIM_OBS_PERT  = [f"{n}_pert"  for n in OBS_NAMES]
 SIM_ACT_CLEAN = [f"{a}_clean" for a in ACTION_NAMES]
 SIM_ACT_PERT  = [f"{a}_pert"  for a in ACTION_NAMES]
 SIM_ACT_DELTA = [f"{a}_delta" for a in ACTION_NAMES]
-SIM_META_COLS = ["perturbations"]   # JSON-encoded list of {feat, amount}
+SIM_META_COLS = ["perturbations"]   
 
 SIM_ALL_COLS = (
     ["step", "policy", "reward"] +
@@ -115,13 +140,19 @@ SIM_PLOT_CHOICES = OBS_NAMES + [f"{n}_clean" for n in OBS_NAMES] + [f"{n}_pert" 
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-def log(widget, msg):
+def log(widget, msg, max_lines=500):
     ts = datetime.now().strftime("%H:%M:%S")
     widget.config(state="normal")
     widget.insert("end", f"{ts} {msg}\n")
+    # Cap the console history: an unbounded Text widget makes every later
+    # insert/scroll progressively slower over a long session.
+    n_lines = int(widget.index("end-1c").split(".")[0])  # = content lines + 1
+    if n_lines - 1 > max_lines:
+        widget.delete("1.0", f"{n_lines - max_lines}.0")
     widget.see("end")
     widget.config(state="disabled")
-    widget.update_idletasks()
+    # NOTE: no forced update_idletasks() here – Tk repaints the console on the
+    # next idle cycle (between loop steps), avoiding a synchronous flush per log.
 
 def btn(parent, text, cmd, bg, fg="white", width=12):
     return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg,
@@ -264,12 +295,12 @@ class App:
 
         # ── Multi-perturbation list: each entry is {"feat": str, "amount": float}
         self.pert_list: list[dict] = []   # active perturbations
-        self.pert_feat   = tk.StringVar(value=PERTURB_TARGETS[0])
+        self.pert_feat   = tk.StringVar(value=PERTURB_DISPLAY[0])
         self.pert_amount = tk.DoubleVar(value=0.0)
 
         # ── Baseline dataset
         self.dataset_df       = None
-        self.ext_plot_obs_var = tk.StringVar(value=OBS_NAMES[0])
+        self.ext_plot_obs_var = tk.StringVar(value=OBS_DISPLAY[OBS_NAMES[0]])
 
         # ── Simulation dataset (loaded after session closes)
         self.sim_df = None
@@ -279,7 +310,7 @@ class App:
         self.unified_plot_fig     = None
         self.unified_plot_ax      = None
         self.unified_placeholder  = None
-        self.unified_plot_col_var = tk.StringVar(value=OBS_NAMES[0])
+        self.unified_plot_col_var = tk.StringVar(value=OBS_DISPLAY[OBS_NAMES[0]])
         self.sim_col_combo        = None
 
         # ── Session / CSV recording
@@ -287,6 +318,14 @@ class App:
         self._sim_writer  = None
         self._sim_path    = ""
         self._session_open = False  # True = session in progress (file open)
+        # True once an episode has ended (finished or crashed): the env is no
+        # longer steppable, so Start must go through Reset first. A plain pause
+        # (Stop) does NOT set this, so it stays resumable.
+        self._needs_reset  = False
+
+        # ── Live plot buffer (populated step-by-step during a running session)
+        self._live_cols: dict[str, list] = {}
+        self.live_plot_var = tk.BooleanVar(value=True)
 
         self.build()
         self.init_env()
@@ -313,6 +352,9 @@ class App:
     def reset_env(self):
         """Reset closes the current session (if any) then resets the env."""
         self._close_session()
+        # A fresh episode is steppable again, regardless of how the last one ended.
+        self._needs_reset = False
+        self.stop_req     = False
         if self.env is None:
             self.init_env(); return
         try:
@@ -341,6 +383,19 @@ class App:
                 w.config(text=f"{self.obs_dict.get(n, 0.0):.3f}")
 
     # ── Policy ────────────────────────────────────────────────────────────────
+    def _env_action_order(self):
+        """Action names in the order the environment expects to receive them.
+
+        This is NOT the same as ACTION_NAMES (the env uses
+        ['dhw_storage', 'electrical_storage', 'cooling_device']). Packing
+        actions in the wrong order sends each value to the wrong device.
+        Falls back to ACTION_NAMES if the controller isn't ready yet.
+        """
+        try:
+            return list(self.rbc.action_names[0])
+        except Exception:
+            return list(ACTION_NAMES)
+
     def predict(self, obs_dict):
         if self.policy_var.get() == "rbc":
             if not self.rbc or self.obs is None:
@@ -348,7 +403,10 @@ class App:
             vec  = [obs_dict.get(n, 0.0) for n in self.rbc.observation_names[0]]
             raw  = self.rbc.predict([vec])
             acts = raw[0] if raw else [0.0, 0.0, 0.0]
-            return {n: clamp(n, acts[i]) for i, n in enumerate(ACTION_NAMES)}
+            # The RBC returns actions in the ENV's action order, so label them
+            # by that order (not ACTION_NAMES) to avoid mislabelling devices.
+            return {n: clamp(n, acts[i])
+                    for i, n in enumerate(self._env_action_order())}
         return self.neural.predict(obs_dict)
 
     def compute(self):
@@ -406,6 +464,8 @@ class App:
         self._sim_writer.writeheader()
         self._sim_file.flush()
         self._session_open = True
+        # Fresh live buffer for this session (kept across pause/resume).
+        self._live_cols = {c: [] for c in SIM_ALL_COLS}
         log(self.console, f"Session started -> {self._sim_path}")
         self._update_session_label()
 
@@ -449,6 +509,10 @@ class App:
             row[f"{a}_delta"] = round(abs(p_actions[a] - c_actions[a]), 6)
         self._sim_writer.writerow(row)
         self._sim_file.flush()
+        # Mirror the row into the live buffer so the plot can grow step-by-step.
+        if self._live_cols:
+            for k in SIM_ALL_COLS:
+                self._live_cols[k].append(row.get(k))
 
     # ── Simulation ────────────────────────────────────────────────────────────
     def step(self):
@@ -456,7 +520,10 @@ class App:
             log(self.console, "Environment not initialised."); return
         c, p, c_obs, p_obs = self.compute()
         acts        = p if self.pert_list else c
-        action_list = [[acts[a] for a in ACTION_NAMES]]
+        # Pack in the ENV's action order, not ACTION_NAMES, or each value lands
+        # on the wrong device (e.g. the electrical_storage action driving the
+        # cooling_device → invalid cooling → CityLearn aborts the step).
+        action_list = [[acts[a] for a in self._env_action_order()]]
         
         # Initialise to avoid unbound errors
         obs_names = []
@@ -488,21 +555,28 @@ class App:
                         f"perturbed={p[dev]:.3f} D={d:.3f}")
             self._write_sim_row(reward[0], c, p, c_obs, p_obs)
             self.update_obs(); self.refresh()
+            if self.live_plot_var.get():
+                self._draw_unified_plot(quiet=True)
             if term or trunc:
-                log(self.console, "Episode finished.")
-                self.stop_req = True
-                self.running  = False
+                log(self.console, "Episode finished. Press Reset to start a new episode.")
+                self.stop_req     = True
+                self.running      = False
+                self._needs_reset = True
                 self._close_session()
         except Exception as e:
-            log(self.console, f"  skip step {self.step_n + 1}: {e}")
-            self.step_n += 1
-            self.stop_req = True
-            self.running = False
+            log(self.console, f"Step {self.step_n + 1} crashed: {e}")
+            log(self.console, "Environment is in an invalid state. Press Reset "
+                              "to start a new episode (Start cannot resume it).")
+            self.stop_req     = True
+            self.running      = False
+            self._needs_reset = True
             self._close_session()
 
     def start(self):
         if self.running:
             log(self.console, "Already running."); return
+        if self._needs_reset:
+            log(self.console, "Episode ended/crashed — press Reset before starting again."); return
         if not self.env:
             log(self.console, "Environment not initialised."); return
         if self.policy_var.get() == "neural" and not self.neural.ready:
@@ -566,16 +640,97 @@ class App:
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not path: return
         try:
-            self.dataset_df = pd.read_csv(path)
-            log(self.console,
-                f"Dataset caricato: {os.path.basename(path)} "
-                f"({len(self.dataset_df)} righe, "
-                f"{len(self.dataset_df.columns)} colonne)")
-            self.dataset_status.config(
-                text=f"Loaded: {os.path.basename(path)}", fg="#5856D6")
+            df = pd.read_csv(path)
         except Exception as e:
             log(self.console, f"Errore caricamento dataset: {e}"); return
+
+        # The CSV must be a COMPLETE dataset: every observation must be present,
+        # either in the RBC/dataset format or in the simulation-export format.
+        norm, info = self._normalize_baseline_df(df)
+        if norm is None:
+            log(self.console, f"Dataset non valido: {info}")
+            self.dataset_status.config(
+                text=f"Invalid: {os.path.basename(path)}", fg=RED)
+            return
+
+        self.dataset_df = norm
+        log(self.console,
+            f"Dataset caricato: {os.path.basename(path)} "
+            f"({len(norm)} righe) [{info}]")
+        self.dataset_status.config(
+            text=f"Loaded: {os.path.basename(path)} ({info})", fg="#5856D6")
         self._show_ext_obs_picker()
+        self._draw_unified_plot(quiet=True)
+
+    def _normalize_baseline_df(self, df):
+        """Validate that `df` is a *complete* baseline dataset and return
+        ``(normalized_df, label)`` whose columns are the internal observation
+        names, or ``(None, error_message)`` if it is not usable.
+
+        Two formats are accepted:
+          * RBC / dataset export – one column per observation, named via
+            ``CL_TO_CSV`` (e.g. ``indoor_temp``) or by its raw CityLearn name.
+          * Simulation export – ``<obs>_clean`` / ``<obs>_pert`` for every
+            observation (the user picks which series to use as baseline).
+        A dataset is "complete" only if *all* observations resolve.
+        """
+        if len(df) == 0:
+            return None, "il file non contiene righe"
+        cols = set(df.columns)
+
+        # 1) RBC / dataset format.
+        rbc_src, rbc_missing = {}, []
+        for n in OBS_NAMES:
+            csv_name = CL_TO_CSV.get(n, n)
+            if csv_name in cols:
+                rbc_src[n] = csv_name
+            elif n in cols:
+                rbc_src[n] = n
+            else:
+                rbc_missing.append(n)
+        if not rbc_missing:
+            out = pd.DataFrame({n: df[s] for n, s in rbc_src.items()})
+            if "reward" in cols:
+                out["reward"] = df["reward"].values   # keep reward for plotting
+            return out, "RBC dataset"
+
+        # 2) Simulation-export format (needs both _clean and _pert for all obs).
+        sim_missing = [n for n in OBS_NAMES
+                       if f"{n}_clean" not in cols or f"{n}_pert" not in cols]
+        if not sim_missing:
+            suffix = self._ask_sim_baseline_suffix()
+            if suffix is None:
+                return None, "caricamento annullato"
+            out = pd.DataFrame({n: df[f"{n}_{suffix}"] for n in OBS_NAMES})
+            if "reward" in cols:
+                out["reward"] = df["reward"].values   # keep reward for plotting
+            return out, f"simulation/{suffix}"
+
+        # Neither format is complete – report the closest match's gaps.
+        miss = rbc_missing if len(rbc_missing) <= len(sim_missing) else sim_missing
+        miss_disp = ", ".join(OBS_DISPLAY.get(n, n) for n in miss)
+        return None, f"dataset incompleto, osservazioni mancanti: {miss_disp}"
+
+    def _ask_sim_baseline_suffix(self):
+        """Modal dialog used when a simulation CSV is loaded as baseline:
+        ask whether to use the clean or the perturbed series. Returns
+        ``"clean"`` / ``"pert"`` or ``None`` if the user cancels."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Serie baseline dalla simulazione")
+        dlg.geometry("400x170"); dlg.resizable(False, False)
+        dlg.configure(bg=BG_CARD); dlg.grab_set()
+        tk.Label(dlg,
+                 text="Il CSV e una simulazione (clean + perturbata).\n"
+                      "Quale serie vuoi usare come baseline?",
+                 bg=BG_CARD, font=("Helvetica", 12), justify="left") \
+            .pack(padx=20, pady=(20, 14), anchor="w")
+        choice = {"v": None}
+        def pick(s): choice["v"] = s; dlg.destroy()
+        row = tk.Frame(dlg, bg=BG_CARD); row.pack(pady=(0, 10))
+        btn(row, "clean",     lambda: pick("clean"), ORANGE, width=11).pack(side="left", padx=6)
+        btn(row, "perturbed", lambda: pick("pert"),  RED,    width=11).pack(side="left", padx=6)
+        dlg.wait_window()
+        return choice["v"]
 
     def _show_ext_obs_picker(self):
         if self.dataset_df is None: return
@@ -588,21 +743,25 @@ class App:
                 available.append(cl_name)
         if not available:
             log(self.console, "Nessuna colonna obs trovata nel dataset."); return
+        display_choices = [OBS_DISPLAY.get(n, n) for n in available]
+        if "reward" in self.dataset_df.columns:
+            display_choices.append("reward")
         dlg = tk.Toplevel(self.root)
         dlg.title("Scegli l'osservazione da plottare")
         dlg.geometry("420x180"); dlg.resizable(False, False)
         dlg.configure(bg=BG_CARD); dlg.grab_set()
         tk.Label(dlg, text="Osservazione:", bg=BG_CARD,
                  font=("Helvetica", 12)).pack(padx=20, pady=(20, 6), anchor="w")
-        obs_var = tk.StringVar(value=available[0])
-        ttk.Combobox(dlg, textvariable=obs_var, values=available,
+        obs_var = tk.StringVar(value=display_choices[0])
+        ttk.Combobox(dlg, textvariable=obs_var, values=display_choices,
                      state="readonly", font=("Helvetica", 11), width=40) \
             .pack(padx=20, pady=(0, 16))
         def confirm():
-            self.ext_plot_obs_var.set(obs_var.get())
-            self.unified_plot_col_var.set(obs_var.get())
+            disp = obs_var.get()
+            self.ext_plot_obs_var.set(disp)
+            self.unified_plot_col_var.set(disp)
             if self.sim_col_combo is not None:
-                self.sim_col_combo.set(obs_var.get())
+                self.sim_col_combo.set(disp)
             dlg.destroy()
             self._draw_unified_plot()
         btn(dlg, "Plot", confirm, BLUE, width=10).pack(pady=(0, 10))
@@ -611,10 +770,15 @@ class App:
     def _load_sim_for_plot(self, path: str):
         try:
             self.sim_df = pd.read_csv(path)
-            all_choices = list(dict.fromkeys(
-                c for c in SIM_PLOT_CHOICES if c in self.sim_df.columns))
-            if self.sim_col_combo is not None:
-                self.sim_col_combo["values"] = all_choices
+            # Keep custom display names; show only obs that actually have data.
+            available = [OBS_DISPLAY[n] for n in OBS_NAMES
+                         if f"{n}_clean" in self.sim_df.columns
+                         or f"{n}_pert" in self.sim_df.columns
+                         or n in self.sim_df.columns]
+            if "reward" in self.sim_df.columns:
+                available.append("reward")
+            if self.sim_col_combo is not None and available:
+                self.sim_col_combo["values"] = available
             self.sim_status_lbl.config(
                 text=f"Loaded: {os.path.basename(path)}", fg="#5856D6")
             log(self.console,
@@ -632,8 +796,44 @@ class App:
         self._load_sim_for_plot(path)
 
     # ── Unified plot ──────────────────────────────────────────────────────────
-    def _draw_unified_plot(self):
-        col = self.unified_plot_col_var.get()
+    def _get_sim_series(self, col):
+        """Return (steps, values) for the simulation line.
+
+        While a session is running this reads the in-memory live buffer, so the
+        curve grows step-by-step over the baseline. Once the session is closed
+        it falls back to the loaded sim_df (final, full curve)."""
+        if self._session_open and self._live_cols.get("step"):
+            if col not in self._live_cols:
+                return None, None
+            steps = np.asarray(self._live_cols["step"], dtype=float)
+            vals  = np.asarray(self._live_cols[col],   dtype=float)
+            return steps, vals
+        df_s = self.sim_df
+        if df_s is not None and col in df_s.columns:
+            vals  = df_s[col].to_numpy(dtype=float)
+            steps = (df_s["step"].to_numpy()
+                     if "step" in df_s.columns else np.arange(len(vals)))
+            return steps, vals
+        return None, None
+
+    def _perturbations_active(self) -> bool:
+        """Whether perturbations apply to the data currently being plotted.
+
+        Live session: the current active perturbation list. Loaded/closed sim:
+        the recorded 'perturbations' meta column (non-empty on any step).
+        When False, only the clean curve is drawn (clean == perturbed anyway).
+        """
+        if self._session_open:
+            return bool(self.pert_list)
+        df = self.sim_df
+        if df is not None and "perturbations" in df.columns:
+            vals = df["perturbations"].astype(str).str.strip()
+            return bool((~vals.isin(["", "[]", "nan", "None", "null"])).any())
+        return False
+
+    def _draw_unified_plot(self, quiet=False):
+        disp = self.unified_plot_col_var.get()
+        col  = DISPLAY_TO_OBS.get(disp, disp)   # actual observation name
 
         baseline_series = None
         df_d = self.dataset_df
@@ -645,13 +845,24 @@ class App:
             if col_key is not None:
                 baseline_series = df_d[col_key].to_numpy(dtype=float)
 
-        sim_series = None
-        df_s = self.sim_df
-        if df_s is not None and col in df_s.columns:
-            sim_series = df_s[col].to_numpy(dtype=float)
+        # Simulation curves for the selected observation: clean + perturbed,
+        # drawn on top of the baseline so progress is visible step-by-step.
+        # The perturbed curve is only shown when perturbations were applied
+        # (otherwise it is identical to the clean one). Reward is special: it is
+        # a single series (the applied-policy reward), with no clean/pert split.
+        is_reward = (col == "reward")
+        if is_reward:
+            clean_steps, clean_series = self._get_sim_series("reward")
+            pert_steps,  pert_series  = None, None
+        else:
+            clean_steps, clean_series = self._get_sim_series(f"{col}_clean")
+            pert_steps,  pert_series  = self._get_sim_series(f"{col}_pert")
+        show_pert = (not is_reward) and self._perturbations_active()
 
-        if baseline_series is None and sim_series is None:
-            log(self.console, f"No data available for column: '{col}'.")
+        if (baseline_series is None and clean_series is None
+                and pert_series is None):
+            if not quiet:
+                log(self.console, f"No data available for column: '{disp}'.")
             return
 
         if self.unified_placeholder is not None:
@@ -670,19 +881,30 @@ class App:
         ax = self.unified_plot_ax
         ax.cla()
 
+        live   = self._session_open
+        suffix = "live" if live else "sim"
+
         if baseline_series is not None:
             ax.plot(np.arange(len(baseline_series)), baseline_series,
                     color=BLUE, linewidth=1.4,
-                    label=f"{col} (baseline)", alpha=0.9)
+                    label=f"{disp} (baseline)", alpha=0.9)
 
-        if sim_series is not None and df_s is not None:
-            t2 = (df_s["step"].to_numpy()
-                  if "step" in df_s.columns
-                  else np.arange(len(sim_series)))
-            ax.plot(t2, sim_series, color=ORANGE, linewidth=1.4,
-                    label=f"{col} (sim)", linestyle="--", alpha=0.9)
+        if clean_series is not None and len(clean_series):
+            clean_label = f"{disp} ({suffix})" if is_reward else f"{disp} (clean)"
+            ax.plot(clean_steps, clean_series, color=ORANGE, linewidth=1.4,
+                    label=clean_label, linestyle="--", alpha=0.9)
+            if live:
+                ax.plot(clean_steps[-1], clean_series[-1], "o",
+                        color=ORANGE, markersize=5)
 
-        ax.set_title(col, fontsize=10, pad=4)
+        if show_pert and pert_series is not None and len(pert_series):
+            ax.plot(pert_steps, pert_series, color=PURPLE, linewidth=1.4,
+                    label=f"{disp} (perturbed)", linestyle="--", alpha=0.9)
+            if live:
+                ax.plot(pert_steps[-1], pert_series[-1], "o",
+                        color=PURPLE, markersize=5)
+
+        ax.set_title(disp, fontsize=10, pad=4)
         ax.set_xlabel("timestep", fontsize=8)
         ax.tick_params(labelsize=7)
         ax.legend(fontsize=8, loc="upper right")
@@ -695,16 +917,23 @@ class App:
                 self.unified_plot_fig, master=self.unified_plot_inner)
             self.unified_plot_canvas.get_tk_widget() \
                 .pack(fill="both", expand=True, padx=4, pady=(0, 6))
-        self.unified_plot_canvas.draw()
+        # draw_idle() coalesces redraws and lets Tk render on the next idle
+        # cycle instead of blocking the event loop on every live step.
+        self.unified_plot_canvas.draw_idle()
 
-        parts = []
-        if baseline_series is not None: parts.append("baseline")
-        if sim_series       is not None: parts.append("sim")
-        log(self.console, f"Plot aggiornato: {col} [{', '.join(parts)}]")
+        if not quiet:
+            parts = []
+            if baseline_series is not None: parts.append("baseline")
+            if clean_series    is not None:
+                parts.append(suffix if is_reward else f"{suffix}_clean")
+            if show_pert and pert_series is not None: parts.append(f"{suffix}_pert")
+            log(self.console, f"Plot aggiornato: {disp} [{', '.join(parts)}]")
 
     # ── Multi-perturbation management ─────────────────────────────────────────
     def _add_perturbation(self):
-        feat = self.pert_feat.get()
+        # Combobox shows short display labels; map back to the internal name
+        # used by the perturbation logic (action labels pass through unchanged).
+        feat = DISPLAY_TO_OBS.get(self.pert_feat.get(), self.pert_feat.get())
         try:
             amount = float(self.pert_entry.get().replace(",", "."))
         except ValueError:
@@ -755,7 +984,7 @@ class App:
             mode = p.get("mode", "delta")
             sign = "=" if mode == "assign" else ("+" if p["amount"] >= 0 else "")
             tk.Label(row_f,
-                    text=f"{p['feat']}  {sign}{p['amount']:.4f}",
+                    text=f"{OBS_DISPLAY.get(p['feat'], p['feat'])}  {sign}{p['amount']:.4f}",
                     bg=BG_CARD, fg=color,
                     font=("Helvetica", 10)).pack(side="left", padx=(4, 8))
             idx = i  # capture for lambda
@@ -823,7 +1052,7 @@ class App:
         # Feature selector + amount entry
         lbl(pb, "Feature:").pack(fill="x", padx=8, pady=(10, 2))
         ttk.Combobox(pb, textvariable=self.pert_feat,
-                     values=PERTURB_TARGETS, state="readonly",
+                     values=PERTURB_DISPLAY, state="readonly",
                      font=("Helvetica", 11)) \
             .pack(fill="x", padx=8, pady=(0, 6))
 
@@ -959,19 +1188,25 @@ class App:
         lbl(ctrl_bar, "Column:", fg="gray", size=11) \
             .pack(side="left", padx=(0, 6))
 
-        all_choices = list(dict.fromkeys(OBS_NAMES + SIM_PLOT_CHOICES))
         self.sim_col_combo = ttk.Combobox(
             ctrl_bar, textvariable=self.unified_plot_col_var,
-            values=all_choices, state="readonly",
+            values=PLOT_CHOICES, state="readonly",
             font=("Helvetica", 11), width=32)
         self.sim_col_combo.pack(side="left", padx=(0, 10))
+        # Defer the redraw to the next idle tick so the combobox closes
+        # immediately instead of blocking on the (heavier) plot rebuild.
         self.sim_col_combo.bind("<<ComboboxSelected>>",
-                                lambda e: self._draw_unified_plot())
+                                lambda e: self.root.after_idle(self._draw_unified_plot))
 
         btn(ctrl_bar, "Plot", self._draw_unified_plot, BLUE, width=8) \
             .pack(side="left", padx=(0, 10))
         btn(ctrl_bar, "Load sim file", self.load_sim_file,
             "#5856D6", width=14).pack(side="left", padx=(0, 10))
+
+        tk.Checkbutton(ctrl_bar, text="Live plot", variable=self.live_plot_var,
+                       bg=BG_CARD, activebackground=BG_CARD,
+                       font=("Helvetica", 10)) \
+            .pack(side="left", padx=(0, 10))
 
         self.sim_status_lbl = lbl(ctrl_bar, "No simulation loaded yet.",
                                   fg="gray", size=10)
