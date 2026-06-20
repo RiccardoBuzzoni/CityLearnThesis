@@ -67,7 +67,7 @@ OBS_DISPLAY = {
     "carbon_intensity":                              "carbon_int",
     "solar_generation":                              "solar_gen",
     "occupant_count":                                "occupants",
-    "electrical_storage_soc":                        "batt_soc",
+    "electrical_storage_soc":                        "elec_soc",
     "dhw_storage_soc":                               "dhw_soc",
     "dhw_demand":                                    "dhw_demand",
 }
@@ -184,6 +184,11 @@ def card(parent, title, col, row=0, padx=(0, 6), colspan=1):
                      highlightbackground="#D0D0D0", highlightthickness=1)
     outer.grid(row=row, column=col, columnspan=colspan,
                sticky="nsew", padx=padx)
+    
+    # Force the outer frame to distribute its vertical space to its children
+    outer.rowconfigure(1, weight=1)
+    outer.columnconfigure(0, weight=1)
+
     if title:
         lbl(outer, title, bold=True, size=13).pack(fill="x", padx=14, pady=(14, 6))
     inner = tk.Frame(outer, bg=BG_CARD)
@@ -276,8 +281,14 @@ class App:
         self.root = root
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.title("RBC vs Neural Policy")
-        self.root.geometry("1900x1200")
-        self.root.minsize(1600, 950)
+        self.root.geometry("1600x900")
+        try:
+            # Try Windows-style maximizing
+            self.root.state("zoomed")
+        except tk.TclError:
+            # Fallback for Linux / WSL / Ubuntu X11 environments
+            self.root.attributes("-zoomed", True)
+        self.root.minsize(1200, 700)
         self.root.configure(bg=BG_APP)
 
         self.clean_lbl = {}; self.pert_lbl = {}; self.diff_lbl = {}
@@ -391,10 +402,13 @@ class App:
         actions in the wrong order sends each value to the wrong device.
         Falls back to ACTION_NAMES if the controller isn't ready yet.
         """
-        try:
-            return list(self.rbc.action_names[0])
-        except Exception:
-            return list(ACTION_NAMES)
+        if self.rbc is not None:
+            try:
+                return list(self.rbc.action_names[0])
+            except Exception:
+                pass  # Fall through to the default return below
+            
+        return list(ACTION_NAMES)
 
     def predict(self, obs_dict):
         if self.policy_var.get() == "rbc":
@@ -742,12 +756,15 @@ class App:
             elif cl_name in self.dataset_df.columns:
                 available.append(cl_name)
         if not available:
-            log(self.console, "Nessuna colonna obs trovata nel dataset."); return
-        display_choices = [OBS_DISPLAY.get(n, n) for n in available]
+            log(self.console, "No obs column found in dataset."); return
+        
+        display_choices = [str(OBS_DISPLAY.get(n, n) or n or "") for n in available]
+
         if "reward" in self.dataset_df.columns:
             display_choices.append("reward")
+
         dlg = tk.Toplevel(self.root)
-        dlg.title("Scegli l'osservazione da plottare")
+        dlg.title("Choose the observation to plot")
         dlg.geometry("420x180"); dlg.resizable(False, False)
         dlg.configure(bg=BG_CARD); dlg.grab_set()
         tk.Label(dlg, text="Osservazione:", bg=BG_CARD,
@@ -871,9 +888,10 @@ class App:
 
         if self.unified_plot_fig is None:
             self.unified_plot_fig, self.unified_plot_ax = plt.subplots(
-                figsize=(10, 4.5), facecolor=BG_CARD)
-            self.unified_plot_fig.subplots_adjust(
-                left=0.05, right=0.99, top=0.80, bottom=0.22)
+                figsize=(12, 7), facecolor=BG_CARD, layout="tight")
+            
+            self.canvas_unified = FigureCanvasTkAgg(self.unified_plot_fig, master=self.unified_plot_inner)
+            self.canvas_widget_unified = self.canvas_unified.get_tk_widget()
 
         if self.unified_plot_ax is None:
             return
@@ -887,9 +905,9 @@ class App:
         if baseline_series is not None:
             ax.plot(np.arange(len(baseline_series)), baseline_series,
                     color=BLUE, linewidth=1.4,
-                    label=f"{disp} (baseline)", alpha=0.9)
+                    label=f"{disp} (baseline)", alpha=0.9) 
 
-        if clean_series is not None and len(clean_series):
+        if clean_series is not None and clean_steps is not None and len(clean_series) and len(clean_steps):
             clean_label = f"{disp} ({suffix})" if is_reward else f"{disp} (clean)"
             ax.plot(clean_steps, clean_series, color=ORANGE, linewidth=1.4,
                     label=clean_label, linestyle="--", alpha=0.9)
@@ -897,17 +915,17 @@ class App:
                 ax.plot(clean_steps[-1], clean_series[-1], "o",
                         color=ORANGE, markersize=5)
 
-        if show_pert and pert_series is not None and len(pert_series):
+        if show_pert and pert_series is not None and pert_steps is not None and len(pert_series) and len(pert_steps):
             ax.plot(pert_steps, pert_series, color=PURPLE, linewidth=1.4,
                     label=f"{disp} (perturbed)", linestyle="--", alpha=0.9)
             if live:
                 ax.plot(pert_steps[-1], pert_series[-1], "o",
                         color=PURPLE, markersize=5)
 
-        ax.set_title(disp, fontsize=10, pad=4)
-        ax.set_xlabel("timestep", fontsize=8)
-        ax.tick_params(labelsize=7)
-        ax.legend(fontsize=8, loc="upper right")
+        ax.set_title(disp, fontsize=10, pad=10)
+        ax.set_xlabel("timestep", fontsize=12, labelpad=6)
+        ax.tick_params(labelsize=11)
+        ax.legend(fontsize=11, loc="upper right")
         ax.set_facecolor("#FAFAFA")
         for s in ax.spines.values():
             s.set_edgecolor("#DDDDDD")
@@ -1004,8 +1022,8 @@ class App:
 
         body = tk.Frame(self.root, bg=BG_APP)
         body.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        body.rowconfigure(0, weight=0)
-        body.rowconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+        body.rowconfigure(1, weight=3)
         body.columnconfigure(0, weight=2)
         body.columnconfigure(1, weight=3)
         body.columnconfigure(2, weight=3)
@@ -1119,7 +1137,7 @@ class App:
         for row, dev in enumerate(ACTION_NAMES, start=1):
             lbl(tbl, dev, bold=True, size=12, padx=10) \
                 .grid(row=row, column=0, sticky="ew",
-                      padx=(0, 4), pady=(0, 8), ipady=20)
+                      padx=(0, 4), pady=(0, 4), ipady=5)
             cl = tk.Label(tbl, text="0.000", bg=BLUE_LIGHT, fg=BLUE,
                           font=("Helvetica", 22, "bold"),
                           anchor="center", pady=20)
@@ -1149,8 +1167,7 @@ class App:
                 .pack(side="left", padx=(0, 20))
 
     def build_right(self, parent):
-        outer, inner = card(parent, "Current observations", col=2, row=0,
-                            padx=(6, 0))
+        outer, inner = card(parent, "Current observations", col=2, row=0, padx=(0, 0))
         outer.rowconfigure(1, weight=1)
         inner.rowconfigure(1, weight=1)
         inner.columnconfigure(0, weight=1)
@@ -1170,7 +1187,7 @@ class App:
             .pack(fill="x", pady=(12, 4))
         self.console = tk.Text(inner, wrap="word", state="disabled",
                                font=("Courier", 11), relief="flat", bd=0,
-                               bg="#F8F8F8", padx=8, pady=8)
+                               bg="#F8F8F8", padx=8, pady=8, height=10)
         self.console.pack(fill="both", expand=True)
         log(self.console, "GUI ready.")
         log(self.console, "Load the neural policy before switching to it.")
@@ -1227,6 +1244,7 @@ class App:
     def mainloop(self):
         self.root.mainloop()
 
-
 if __name__ == "__main__":
-    App(tk.Tk()).mainloop()
+    root = tk.Tk()
+    root.tk.call('tk', 'scaling', 1.0)
+    App(root).mainloop()

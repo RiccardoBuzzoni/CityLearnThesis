@@ -729,19 +729,12 @@ class StorageDevice(Device):
         If charging, soc = min(`soc_init` + energy*`round_trip_efficiency`, `capacity`)
         If discharging, soc = max(0, `soc_init` + energy/`round_trip_efficiency`)
         """
-        # DEBUG
-        if self.time_step < 1:
-            print(f"[Battery.charge] CALLED: energy={energy}, time_step={self.time_step}")
         
         energy = energy * self.time_step_ratio
         energy_init = self.energy_init
         # The initial State Of Charge (SOC) is the previous SOC minus the energy losses
         energy_final = min(energy_init + energy*self.round_trip_efficiency, self.capacity) if energy >= 0\
             else max(0.0, energy_init + energy/self.round_trip_efficiency)
-
-        # DEBUG
-        if self.time_step < 1:
-            print(f"[Battery.charge] After calc: energy_final={energy_final}, soc_new={energy_final/self.capacity}")
 
         self.__soc[self.time_step] = energy_final/max(self.capacity, ZERO_DIVISION_PLACEHOLDER)
         self.__energy_balance[self.time_step] = self.set_energy_balance(energy_final, energy_init)

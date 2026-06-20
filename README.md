@@ -21,7 +21,7 @@ pip install torchvision==0.23.0
 
 3. Setup `citylearn`:
 ```console
-# From main direcotry
+# From main directory
 cd CityLearn
 pip install -e .
 ```
@@ -36,30 +36,38 @@ pip install stable-baselines3==2.0.0
 
 # LIME — Local Interpretable Model-agnostic Explanations
 pip install lime==<VERSION> --no-deps
+
+# GUI dependencies (tkinter is included in standard Python installations)
+pip install matplotlib pandas
 ```
 
 > **Note:** `lime` must be installed with `--no-deps` to prevent it from upgrading
 > `numpy` to a version incompatible with CityLearn (`numpy<2.0.0` is required).
 
+> **Note:** `tkinter` ships with standard Python on most platforms. On Ubuntu/WSL2 it
+> may need to be installed separately: `sudo apt install python3-tk`.
+
 ---
 
 ## Usage
  
-All scripts should be run from the `scripts/` directory.
+All scripts should be run from the `src/` directory.
 
 ### RBC Pipeline (run in order)
  
 **Step 1 — Data collection**
 ```console
-python collect_rbc_data.py
+python collect_data.py
 ```
-Runs a full AdvancedRBC simulation and saves the dataset to `datasets/advanced_rbc_dataset.csv`.
- 
+Presents an interactive menu:
+- **Option 1 — RBC dataset**: runs a full AdvancedRBC simulation and saves the result to `datasets/advanced_rbc_dataset.csv`. Always available; required before training.
+- **Option 2 — LinearRegressor dataset**: runs a clean (unperturbed) LinearRegressor simulation and saves the result to `datasets/linear_regressor_dataset.csv`. Only available after the model has been trained (Step 2). This CSV is used as the baseline in the GUI when running the neural policy.
+
 **Step 2 — Linear regressor training**
 ```console
 python linear_regressor.py
 ```
-Trains three linear regressors (one per action) and saves the training plots to `../linear_regressor_results/`.
+Trains three linear regressors (one per action) and saves the training plots and model weights to `../linear_regressor_results/`.
  
 **Step 3 — LIME analysis**
 ```console
@@ -72,7 +80,34 @@ Runs the explainability analysis and saves the feature importance plots to `../l
 python evaluate.py
 ```
 Runs both the AdvancedRBC and the linear regressor simulations and saves the comparison plots to `../evaluation_plots/`.
- 
+
+---
+
+### GUI
+
+```console
+python gui.py
+```
+
+Launches an interactive Tkinter GUI for running and comparing simulations in real time.
+
+**Features:**
+
+- **Controller selection**: switch between RBC (AdvancedRBC) and Neural policy (LinearRegressor) at any time.
+- **Dataset baseline**: load a pre-collected CSV (`advanced_rbc_dataset.csv` for RBC, `linear_regressor_dataset.csv` for the neural policy) to use as a clean baseline for comparison.
+- **Perturbations**: add, stack, and remove perturbations on any of the three device actions (`cooling_device`, `dhw_storage`, `electrical_storage`) before or during a simulation.
+- **Step / Start / Stop / Reset**: run the simulation step-by-step or continuously; stop and resume at any point.
+- **Live plot**: toggle live plotting to see the baseline vs. perturbed curves update in real time as the simulation progresses.
+- **Session export**: each simulation session is automatically saved to `simulations/sim_<policy>_<timestamp>.csv` for later analysis.
+- **Auto-load**: on startup the GUI automatically searches for trained model weights in `../linear_regressor_results/` and loads them if found.
+
+**Typical workflow:**
+
+1. Collect the appropriate baseline dataset with `collect_data.py`.
+2. Launch `gui.py`, select the desired controller, and load the matching dataset.
+3. Add perturbations if needed, then start the simulation.
+4. Use the plot panel to compare the baseline and perturbed curves across all observations and actions.
+
 ---
 
 ## Module Descriptions
@@ -88,8 +123,13 @@ The file also includes `run_simulation()` for running the monthly simulation.
  
 ---
 
-### `collect_rbc_data.py` — Dataset Collection
-Runs a full AdvancedRBC simulation and collects at each timestep the 13 observations and the 3 action values produced by the controller, saving the result to a CSV file (`datasets/advanced_rbc_dataset.csv`). This dataset is used as input for linear regressor training. The simulation covers one month (719 hourly timesteps).
+### `collect_data.py` — Dataset Collection
+Interactive script that presents a terminal menu for collecting simulation datasets:
+
+- **RBC dataset** (`datasets/advanced_rbc_dataset.csv`): always available; runs a full AdvancedRBC episode and records the 13 observations and 3 actions at each timestep. Used as training data for the linear regressor and as the baseline in the GUI when running the RBC policy.
+- **LinearRegressor dataset** (`datasets/linear_regressor_dataset.csv`): available only after training. Runs a clean (unperturbed) LinearRegressor episode with the same structure. Used as the baseline in the GUI when running the neural policy.
+
+The script checks for the presence of model artefacts before attempting to collect the regressor dataset, and exits with a clear error and remediation steps if they are missing. The simulation covers one month (719 hourly timesteps).
  
 ---
  
@@ -98,8 +138,8 @@ Trains three linear regressors in PyTorch, one per controller action. Each regre
  
 Feature subsets per target:
 - `cooling_device`: 10 features (temperature, setpoint, demand, price, carbon intensity, solar generation, occupant count, hour)
-- `dhw_storage`: 5 features (SOC, DHW demand, electricity price, solar generation, hour)
-- `electrical_storage`: 4 features (SOC, solar generation, electricity price, hour)
+- `dhw_storage`: 3 features (electricity price, solar generation, hour)
+- `electrical_storage`: 2 features (solar generation, hour)
  
 ---
  
@@ -115,6 +155,11 @@ Sequentially runs the AdvancedRBC and LinearRegressorAgent simulations (an agent
 - **`dhw_storage.png`**: `dhw_storage` action value and DHW storage SOC for both agents
 - **`electrical_storage.png`**: `electrical_storage` action value and battery SOC for both agents
  
-RBC curves are shown as solid lines, regressor curves as dashed lines. Plots are saved to `evaluation_plots/`.
+RBC curves are shown as solid lines, regressor curves as dashed lines. Plots are saved to `../evaluation_plots/`.
+
+---
+
+### `gui.py` — Interactive GUI
+Tkinter-based graphical interface for running real-time simulations with perturbations. See the [GUI](#gui) section above for full details.
  
 ---

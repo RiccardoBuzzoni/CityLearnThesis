@@ -1504,9 +1504,6 @@ class Building(Environment):
         dhw_storage_action: float = None, electrical_storage_action: float = None, washing_machine_actions: dict = None,
         electric_vehicle_storage_actions: dict = None,
     ):
-        # DEBUG
-        if electrical_storage_action is not None:
-            print(f"[Building.apply_actions] electrical_storage_action={electrical_storage_action}")
         
         r"""Update cooling and heating demand for next timestep and charge/discharge storage devices.
 
@@ -1628,27 +1625,15 @@ class Building(Environment):
             else:
                 pass
 
-        # DEBUG
-        if self.time_step < 1:
-            print(f"[apply_actions DEBUG] priority_list={priority_list}")
-            print(f"[apply_actions DEBUG] electrical_storage in actions: {'electrical_storage' in actions}")
-
         for k in priority_list:
             func, args = actions[k]
-
-            # DEBUG
-            if k == 'electrical_storage' and self.time_step < 1:
-                print(f"[apply_actions] Executing {k}: func={func.__name__}, args={args}")
 
             try:
                 func(*args)
 
             except NotImplementedError:
                 pass
-            
-            # DEBUG
-            if k == 'electrical_storage' and self.time_step < 1:
-                print(f"[apply_actions] After {k}: update succeeded")
+
 
     def update_cooling_demand(self, action: float):
         """Update space cooling demand for current time step."""
@@ -1822,18 +1807,8 @@ class Building(Environment):
         time_step_hours_ratio = self.seconds_per_time_step / 3600  # Convert seconds to fraction of hour
         energy = power * time_step_hours_ratio  # Energy in kWh
 
-        # DEBUG
-        if self.time_step < 1:
-            print(f"[update_electrical_storage] action={action}, power={power}, energy={energy}")
-            print(f"[update_electrical_storage] downward_electrical_flexibility={self.downward_electrical_flexibility}")
-
         # Optionally clamp to flexibility range if needed
         energy = min(energy, self.downward_electrical_flexibility)
-
-        # DEBUG
-        if self.time_step < 1:
-            print(f"[update_electrical_storage] energy after clamp={energy}")
-            print(f"[update_electrical_storage] Calling charge({energy})")
 
         self.electrical_storage.charge(self._convert_energy_for_storage(self.electrical_storage, energy))
 

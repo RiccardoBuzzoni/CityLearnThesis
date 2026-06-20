@@ -1006,10 +1006,6 @@ class CityLearnEnv(Environment, Env):
         """
         actions = self._parse_actions(actions)
 
-        # DEBUG: Print parsed actions
-        if self.time_step < 2:
-            print(f"[DEBUG step] time_step={self.time_step}, parsed_actions={actions}")
-
         # Apply actions at current timestep t
         for building, building_actions in zip(self.buildings, actions):
             building.apply_actions(**building_actions)

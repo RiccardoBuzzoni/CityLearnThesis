@@ -327,18 +327,6 @@ class AdvancedRBC(Agent):
                 else:
                     action[dhws_idx] = 0.5
 
-            # Debugging log for actions values and observations values -> Can be modified as needed
-            # Actions value logging should be implemented in a more structured way for UserRBC
-            debug_action_dict = {}
-            if 'cooling_device' in available_act:
-                debug_action_dict['cooling_device'] = action[available_act.index('cooling_device')]
-            if 'dhw_storage' in available_act:
-                debug_action_dict['dhw_storage'] = action[available_act.index('dhw_storage')]
-            if 'electrical_storage' in available_act:
-                debug_action_dict['electrical_storage'] = action[available_act.index('electrical_storage')]
-
-            print(f"[DEBUG] Hour (from obs): {hour:.0f}, Actions: {debug_action_dict}")
-
             actions.append(action)
 
         # Return overwritten actions
