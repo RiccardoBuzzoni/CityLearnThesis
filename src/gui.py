@@ -24,6 +24,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 import pandas as pd
 import numpy as np
 
@@ -36,8 +37,26 @@ RED          = "#FF3B30"
 GREEN        = "#34C759"
 ORANGE       = "#FF9500"
 ORANGE_LIGHT = "#FFF4E0"
-PURPLE       = "#AF52DE"   # perturbed curve
+PURPLE       = "#AF52DE"   # perturbed curve (run 1)
 GRAY         = "#E5E5EA"
+
+# Palette used to colour each perturbed simulation run. The first run keeps
+# PURPLE (the historical single-run colour); every following run cycles to the
+# next colour so already-finished runs stay visible while a new one is drawn
+# on top. Run 2 is the dark green requested for side-by-side comparison.
+RUN_COLORS = [
+    "#AF52DE",   # purple      – run 1
+    "#1B5E20",   # dark green  – run 2
+    "#FF2D55",   # pink/red    – run 3
+    "#00838F",   # teal        – run 4
+    "#8D6E63",   # brown       – run 5
+    "#5856D6",   # indigo      – run 6
+]
+
+
+def run_color(idx):
+    """Colour for the perturbed curve of run #idx (0-based), cycling if needed."""
+    return RUN_COLORS[idx % len(RUN_COLORS)]
 
 OBS_NAMES = [
     "hour",
@@ -142,6 +161,11 @@ SIM_PLOT_CHOICES = OBS_NAMES + [f"{n}_clean" for n in OBS_NAMES] + [f"{n}_pert" 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def log(widget, msg, max_lines=500):
     ts = datetime.now().strftime("%H:%M:%S")
+    # The console panel can be disabled (see the navbar layout); fall back to
+    # stdout so log calls scattered through the app never crash.
+    if widget is None:
+        print(f"{ts} {msg}")
+        return
     widget.config(state="normal")
     widget.insert("end", f"{ts} {msg}\n")
     # Cap the console history: an unbounded Text widget makes every later
@@ -281,18 +305,17 @@ class App:
         self.root = root
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.title("RBC vs Neural Policy")
-        self.root.geometry("1600x900")
-        try:
-            # Try Windows-style maximizing
-            self.root.state("zoomed")
-        except tk.TclError:
-            # Fallback for Linux / WSL / Ubuntu X11 environments
-            self.root.attributes("-zoomed", True)
-        self.root.minsize(1200, 700)
+        self.root.geometry("1920x1080+0+0")
+        self.root.minsize(1280, 720)
         self.root.configure(bg=BG_APP)
 
+        # Action-comparison labels (clean/pert/diff) and observation labels are
+        # only populated when their panels are built. They stay empty while
+        # those panels are disabled, so the code reading them must tolerate that.
         self.clean_lbl = {}; self.pert_lbl = {}; self.diff_lbl = {}
         self.obs_lbl   = {}
+        # Console panel; None until/unless built. log() handles None gracefully.
+        self.console   = None
 
         self.env    = None; self.rbc = None
         self.obs    = None; self.obs_dict = {}
@@ -303,6 +326,9 @@ class App:
         self.running    = False
         self.stop_req   = False
         self.step_n     = 0
+        # id of the pending loop() after-callback, so Reset/Stop can cancel the
+        # run loop instead of leaving it stepping a freshly-reset environment.
+        self._loop_after_id = None
 
         # ── Multi-perturbation list: each entry is {"feat": str, "amount": float}
         self.pert_list: list[dict] = []   # active perturbations
@@ -315,6 +341,14 @@ class App:
 
         # ── Simulation dataset (loaded after session closes)
         self.sim_df = None
+        # True when sim_df is a just-closed session already kept in
+        # _archived_runs (so the plot doesn't redraw the same curve twice).
+        self._sim_df_archived = False
+
+        # ── Archived perturbed runs kept frozen on the plot for comparison.
+        # Each entry: {"cols": {step/<obs>_clean/<obs>_pert/reward: [...]},
+        #              "color": str, "label": str}
+        self._archived_runs: list[dict] = []
 
         # ── Unified plot panel
         self.unified_plot_canvas  = None
@@ -337,6 +371,9 @@ class App:
         # ── Live plot buffer (populated step-by-step during a running session)
         self._live_cols: dict[str, list] = {}
         self.live_plot_var = tk.BooleanVar(value=True)
+        # Deviation view: plot each run's (perturbed − clean) instead of the
+        # absolute value, so overlapping runs spread out around a flat zero line.
+        self.deviation_var = tk.BooleanVar(value=False)
 
         self.build()
         self.init_env()
@@ -362,6 +399,12 @@ class App:
 
     def reset_env(self):
         """Reset closes the current session (if any) then resets the env."""
+        # Fully stop any in-flight run loop FIRST, otherwise the queued loop()
+        # keeps stepping the freshly-reset env (a "ghost" run) and leaves
+        # running=True, which makes the next Start a no-op ("Already running").
+        self.stop_req = True
+        self.running  = False
+        self._cancel_loop()
         self._close_session()
         # A fresh episode is steppable again, regardless of how the last one ended.
         self._needs_reset = False
@@ -455,6 +498,9 @@ class App:
         return c, p, c_obs, p_obs
 
     def refresh(self):
+        # Nothing to update when the action-comparison panel is disabled.
+        if not self.clean_lbl:
+            return
         c, p, _, _ = self.compute()
         for dev in ACTION_NAMES:
             d = abs(p[dev] - c[dev])
@@ -492,9 +538,49 @@ class App:
             self._sim_file   = None
             self._sim_writer = None
         self._session_open = False
+        # Freeze this run's perturbed curve on the plot (in its own colour) so
+        # the next run can be compared against it. Runs that finish for ANY
+        # reason pass through here (Reset, episode end, crash, app close), so
+        # the comparison history is built up consistently.
+        self._archive_current_run()
         log(self.console, f"Session saved: {self._sim_path}")
-        self._load_sim_for_plot(self._sim_path)
+        self._load_sim_for_plot(self._sim_path, archived=True)
         self._update_session_label()
+
+    def _pert_summary(self, pert_list) -> str:
+        """Short, legend-friendly summary of a perturbation list."""
+        parts = []
+        for p in pert_list:
+            feat = p.get("feat", "")
+            name = OBS_DISPLAY.get(feat, feat)
+            amt  = p.get("amount", 0.0)
+            sign = "=" if p.get("mode") == "assign" else ("+" if amt >= 0 else "")
+            parts.append(f"{name}{sign}{amt:g}")
+        summary = ", ".join(parts)
+        if len(summary) > 40:
+            summary = summary[:37] + "..."
+        return summary or "no perturbation"
+
+    def _archive_current_run(self):
+        """Snapshot the just-finished run so its perturbed curve stays on the
+        plot. No-op unless the run had perturbations and at least one step."""
+        steps = self._live_cols.get("step") if self._live_cols else None
+        if not steps or not self.pert_list:
+            return
+        # Copy only the columns the plot needs, detached from _live_cols so the
+        # next session's buffer reset can't mutate this archived snapshot.
+        cols = {k: list(v) for k, v in self._live_cols.items()
+                if k == "step" or k == "reward"
+                or k.endswith("_clean") or k.endswith("_pert")}
+        idx   = len(self._archived_runs)
+        color = run_color(idx)
+        self._archived_runs.append({
+            "cols":  cols,
+            "color": color,
+            "label": f"run {idx + 1} ({self._pert_summary(self.pert_list)})",
+        })
+        log(self.console,
+            f"Run {idx + 1} kept on plot for comparison [{color}].")
 
     def _update_session_label(self):
         if self._session_open:
@@ -595,6 +681,7 @@ class App:
             log(self.console, "Environment not initialised."); return
         if self.policy_var.get() == "neural" and not self.neural.ready:
             log(self.console, "Load the neural policy first."); return
+        self._cancel_loop()    # drop any stray callback before starting fresh
         self._open_session()   # opens only if not already open (pause→resume)
         self.running  = True
         self.stop_req = False
@@ -602,17 +689,33 @@ class App:
         self.loop()
 
     def loop(self):
+        self._loop_after_id = None
         if self.stop_req:
             self.running = False
-            # NOTE: session stays open on Stop – user can resume with Start
-            log(self.console, "Simulation paused. Press Start to resume.")
             return
         self.step()
-        self.root.after(400, self.loop)
+        # step() may end the episode (term/crash); only keep looping if it
+        # didn't, and remember the callback id so Reset/Stop can cancel it.
+        if self.stop_req or not self.running:
+            return
+        self._loop_after_id = self.root.after(400, self.loop)
+
+    def _cancel_loop(self):
+        """Cancel a pending run-loop callback, if any."""
+        if self._loop_after_id is not None:
+            try:
+                self.root.after_cancel(self._loop_after_id)
+            except Exception:
+                pass
+            self._loop_after_id = None
 
     def stop(self):
         """Pause: stops the loop but keeps the session (CSV) open."""
         self.stop_req = True
+        self.running  = False
+        self._cancel_loop()
+        # NOTE: session stays open on Stop – user can resume with Start.
+        log(self.console, "Simulation paused. Press Start to resume.")
 
     # ── Load model ────────────────────────────────────────────────────────────
     _MODEL_SEARCH_DIR = ["../linear_regressor_results"]
@@ -673,7 +776,8 @@ class App:
             f"({len(norm)} righe) [{info}]")
         self.dataset_status.config(
             text=f"Loaded: {os.path.basename(path)} ({info})", fg="#5856D6")
-        self._show_ext_obs_picker()
+        # No "what to plot" prompt on load — the "Change obs" button (and the
+        # Column selector) already pick the observation. Just draw the current one.
         self._draw_unified_plot(quiet=True)
 
     def _normalize_baseline_df(self, df):
@@ -784,9 +888,13 @@ class App:
         btn(dlg, "Plot", confirm, BLUE, width=10).pack(pady=(0, 10))
 
     # ── Simulation CSV → plot ─────────────────────────────────────────────────
-    def _load_sim_for_plot(self, path: str):
+    def _load_sim_for_plot(self, path: str, archived: bool = False):
         try:
             self.sim_df = pd.read_csv(path)
+            # A just-closed session (archived=True) is already drawn from
+            # _archived_runs; an externally loaded file is not, so its perturbed
+            # curve must still be drawn straight from sim_df.
+            self._sim_df_archived = archived
             # Keep custom display names; show only obs that actually have data.
             available = [OBS_DISPLAY[n] for n in OBS_NAMES
                          if f"{n}_clean" in self.sim_df.columns
@@ -810,6 +918,9 @@ class App:
             title="Seleziona un file di simulazione CSV",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not path: return
+        # An externally loaded file is its own context; drop the in-session run
+        # history so the two don't get drawn on top of each other.
+        self._archived_runs.clear()
         self._load_sim_for_plot(path)
 
     # ── Unified plot ──────────────────────────────────────────────────────────
@@ -877,37 +988,36 @@ class App:
         show_pert = (not is_reward) and self._perturbations_active()
 
         if (baseline_series is None and clean_series is None
-                and pert_series is None):
+                and pert_series is None and not self._archived_runs):
             if not quiet:
                 log(self.console, f"No data available for column: '{disp}'.")
             return
-
-        if self.unified_placeholder is not None:
-            self.unified_placeholder.pack_forget()
-            self.unified_placeholder = None
-
-        if self.unified_plot_fig is None:
-            self.unified_plot_fig, self.unified_plot_ax = plt.subplots(
-                figsize=(12, 7), facecolor=BG_CARD, layout="tight")
-            
-            self.canvas_unified = FigureCanvasTkAgg(self.unified_plot_fig, master=self.unified_plot_inner)
-            self.canvas_widget_unified = self.canvas_unified.get_tk_widget()
 
         if self.unified_plot_ax is None:
             return
 
         ax = self.unified_plot_ax
         ax.cla()
+        ax.axis("on")   # may have been turned off by the empty-state message
 
         live   = self._session_open
         suffix = "live" if live else "sim"
+        # Deviation view: plot (perturbed − clean) per run instead of absolute
+        # values. The clean curve collapses to a flat zero reference, so runs
+        # spread out and small effects become readable. Only meaningful for the
+        # clean/perturbed obs pairs, never for the single reward series.
+        deviation = bool(self.deviation_var.get()) and not is_reward
 
-        if baseline_series is not None:
+        if baseline_series is not None and not deviation:
             ax.plot(np.arange(len(baseline_series)), baseline_series,
                     color=BLUE, linewidth=1.4,
-                    label=f"{disp} (baseline)", alpha=0.9) 
+                    label=f"{disp} (baseline)", alpha=0.9)
 
-        if clean_series is not None and clean_steps is not None and len(clean_series) and len(clean_steps):
+        if deviation:
+            # The clean (unperturbed) curve is the reference: Δ = 0.
+            ax.axhline(0.0, color=ORANGE, linewidth=1.2, linestyle=":",
+                       alpha=0.9, label="clean (Δ = 0 reference)")
+        elif clean_series is not None and clean_steps is not None and len(clean_series) and len(clean_steps):
             clean_label = f"{disp} ({suffix})" if is_reward else f"{disp} (clean)"
             ax.plot(clean_steps, clean_series, color=ORANGE, linewidth=1.4,
                     label=clean_label, linestyle="--", alpha=0.9)
@@ -915,14 +1025,67 @@ class App:
                 ax.plot(clean_steps[-1], clean_series[-1], "o",
                         color=ORANGE, markersize=5)
 
-        if show_pert and pert_series is not None and pert_steps is not None and len(pert_series) and len(pert_steps):
-            ax.plot(pert_steps, pert_series, color=PURPLE, linewidth=1.4,
-                    label=f"{disp} (perturbed)", linestyle="--", alpha=0.9)
-            if live:
-                ax.plot(pert_steps[-1], pert_series[-1], "o",
-                        color=PURPLE, markersize=5)
+        # Already-finished perturbed runs, frozen in their own colours so the
+        # current run can be compared against them. In deviation view each run
+        # is drawn as (perturbed − clean) of that run.
+        if not is_reward:
+            pert_key  = f"{col}_pert"
+            clean_key = f"{col}_clean"
+            for run in self._archived_runs:
+                rs = run["cols"].get("step")
+                rv = run["cols"].get(pert_key)
+                if not rs or not rv:
+                    continue
+                rsa = np.asarray(rs, dtype=float)
+                rva = np.asarray(rv, dtype=float)
+                if deviation:
+                    rc = run["cols"].get(clean_key)
+                    if not rc:
+                        continue
+                    rca = np.asarray(rc, dtype=float)
+                    m   = min(len(rsa), len(rva), len(rca))
+                    rsa, rva = rsa[:m], rva[:m] - rca[:m]
+                ax.plot(rsa, rva, color=run["color"], linewidth=1.4,
+                        linestyle="--", alpha=0.9, label=run["label"])
 
-        ax.set_title(disp, fontsize=10, pad=10)
+        # Current perturbed curve. Live: the run in progress, drawn in its own
+        # run colour (run #N+1 after N archived runs) so it is distinct from the
+        # frozen ones. Not live: only an externally loaded sim file reaches here
+        # — a just-closed session is already shown via _archived_runs above.
+        draw_current_pert = (show_pert and pert_series is not None
+                             and pert_steps is not None
+                             and len(pert_series) and len(pert_steps)
+                             and (live or not self._sim_df_archived))
+        # Deviation needs the paired clean series to subtract; skip if missing.
+        if deviation and (clean_series is None or clean_steps is None
+                          or not len(clean_series)):
+            draw_current_pert = False
+        if draw_current_pert:
+            if live:
+                cur_color = run_color(len(self._archived_runs))
+                cur_label = (f"run {len(self._archived_runs) + 1} "
+                             f"({self._pert_summary(self.pert_list)})")
+            else:
+                cur_color = PURPLE
+                cur_label = f"{disp} (perturbed)"
+            cur_steps, cur_vals = np.asarray(pert_steps), np.asarray(pert_series)
+            if deviation:
+                m = min(len(cur_steps), len(cur_vals), len(clean_series))
+                cur_steps = cur_steps[:m]
+                cur_vals  = cur_vals[:m] - np.asarray(clean_series)[:m]
+            ax.plot(cur_steps, cur_vals, color=cur_color, linewidth=1.4,
+                    label=cur_label, linestyle="--", alpha=0.9)
+            if live and len(cur_steps):
+                ax.plot(cur_steps[-1], cur_vals[-1], "o",
+                        color=cur_color, markersize=5)
+
+        if deviation:
+            ax.set_title(f"{disp} — deviation (perturbed − clean)",
+                         fontsize=10, pad=10)
+            ax.set_ylabel("Δ vs clean", fontsize=12, labelpad=6)
+        else:
+            ax.set_title(disp, fontsize=10, pad=10)
+            ax.set_ylabel("")
         ax.set_xlabel("timestep", fontsize=12, labelpad=6)
         ax.tick_params(labelsize=11)
         ax.legend(fontsize=11, loc="upper right")
@@ -930,22 +1093,20 @@ class App:
         for s in ax.spines.values():
             s.set_edgecolor("#DDDDDD")
 
-        if self.unified_plot_canvas is None:
-            self.unified_plot_canvas = FigureCanvasTkAgg(
-                self.unified_plot_fig, master=self.unified_plot_inner)
-            self.unified_plot_canvas.get_tk_widget() \
-                .pack(fill="both", expand=True, padx=4, pady=(0, 6))
         # draw_idle() coalesces redraws and lets Tk render on the next idle
         # cycle instead of blocking the event loop on every live step.
         self.unified_plot_canvas.draw_idle()
 
         if not quiet:
             parts = []
-            if baseline_series is not None: parts.append("baseline")
-            if clean_series    is not None:
+            if baseline_series is not None and not deviation: parts.append("baseline")
+            if clean_series is not None:
                 parts.append(suffix if is_reward else f"{suffix}_clean")
-            if show_pert and pert_series is not None: parts.append(f"{suffix}_pert")
-            log(self.console, f"Plot aggiornato: {disp} [{', '.join(parts)}]")
+            if draw_current_pert: parts.append(f"{suffix}_pert")
+            if not is_reward and self._archived_runs:
+                parts.append(f"{len(self._archived_runs)} archived run(s)")
+            mode = " (deviation)" if deviation else ""
+            log(self.console, f"Plot aggiornato: {disp}{mode} [{', '.join(parts)}]")
 
     # ── Multi-perturbation management ─────────────────────────────────────────
     def _add_perturbation(self):
@@ -983,6 +1144,15 @@ class App:
         log(self.console, "All perturbations cleared.")
         self._rebuild_pert_list_ui()
         self.refresh()
+
+    def _clear_archived_runs(self):
+        """Drop the frozen run history so the plot starts fresh."""
+        if not self._archived_runs:
+            log(self.console, "No archived runs to clear."); return
+        n = len(self._archived_runs)
+        self._archived_runs.clear()
+        log(self.console, f"Cleared {n} archived run(s) from the plot.")
+        self._draw_unified_plot(quiet=True)
 
     def _rebuild_pert_list_ui(self):
         """Refreshes the scrollable list of active perturbations."""
@@ -1022,78 +1192,82 @@ class App:
 
         body = tk.Frame(self.root, bg=BG_APP)
         body.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        body.rowconfigure(0, weight=1)
-        body.rowconfigure(1, weight=3)
-        body.columnconfigure(0, weight=2)
-        body.columnconfigure(1, weight=3)
-        body.columnconfigure(2, weight=3)
+        # Layout: a horizontal navbar on top (row 0, natural height), and below
+        # it a compact side panel (current obs + action comparison) on the left
+        # with the unified plot filling the rest.
+        body.rowconfigure(0, weight=0)
+        body.rowconfigure(1, weight=1)
+        body.columnconfigure(0, weight=0)   # compact side panel
+        body.columnconfigure(1, weight=1)   # plot fills the rest
 
-        self.build_left(body)
-        self.build_center(body)
-        self.build_right(body)
+        self.build_navbar(body)
+        self.build_side_panel(body)
+        # ── Console panel disabled for this layout (kept for later — see method) ─
+        # self.build_right(body)        # Console
         self.build_unified_plot(body)
 
-    def build_left(self, parent):
-        _, inner = card(parent, "", col=0, row=0)
+    def build_navbar(self, parent):
+        """Top navbar: the former left-column sections (Controller, Dataset,
+        Perturbations, Simulation) laid out horizontally across the full width
+        instead of stacked vertically on the left."""
+        _, inner = card(parent, "", col=0, row=0, padx=(0, 0), colspan=2)
 
-        # Controller
-        ctrl = section(inner, "Controller")
+        # Four equal-width groups spread across the whole width. uniform="nav"
+        # keeps them the same size so nothing stays bunched up on the left.
+        for c in range(4):
+            inner.columnconfigure(c, weight=1, uniform="nav")
+
+        def group(title, col, padx):
+            g = tk.LabelFrame(inner, text=title, bg=BG_CARD,
+                              font=("Helvetica", 10, "bold"), fg="#444")
+            g.grid(row=0, column=col, sticky="nsew", padx=padx)
+            return g
+
+        # ── Controller ────────────────────────────────────────────────────────
+        ctrl = group("Controller", 0, (0, 8))
         for text, val in [("RBC (AdvancedRBC)", "rbc"),
-                          ("Neural policy (LinearRegressor)", "neural")]:
+                          ("Neural policy (LinearRegressor)", "neural"),
+                          ("Reinforcement Learning Policy", "RL")]:
             tk.Radiobutton(ctrl, text=text, variable=self.policy_var,
                            value=val, command=self.refresh, bg=BG_CARD,
-                           font=("Helvetica", 11)) \
-                .pack(anchor="w", padx=8,
-                      pady=(8, 8) if val == "rbc" else (0, 8))
+                           font=("Helvetica", 10)) \
+                .pack(anchor="w", padx=8, pady=(6, 0))
 
-        # Dataset baseline
-        ds = section(inner, "Dataset (baseline)")
-
-        # riga orizzontale per i due bottoni
+        # ── Dataset (baseline) ────────────────────────────────────────────────
+        ds = group("Dataset (baseline)", 1, 8)
         row = tk.Frame(ds, bg=BG_CARD)
         row.pack(fill="x", padx=8, pady=(10, 6))
-
         btn(row, "Load dataset", self.load_dataset, "#5856D6", width=12) \
             .pack(side="left")
-
         btn(row, "Change obs", self._show_ext_obs_picker, GRAY,
-            fg="black", width=12) \
-            .pack(side="left", padx=(8, 0))
-
-        # testo di stato sotto
+            fg="black", width=12).pack(side="left", padx=(8, 0))
         self.dataset_status = lbl(ds, "No dataset loaded", fg="gray")
         self.dataset_status.pack(fill="x", padx=8, pady=(4, 10))
 
         # ── Perturbations ─────────────────────────────────────────────────────
-        pb = section(inner, "Perturbations")
-
-        # Feature selector + amount entry
-        lbl(pb, "Feature:").pack(fill="x", padx=8, pady=(10, 2))
-        ttk.Combobox(pb, textvariable=self.pert_feat,
+        pb = group("Perturbations", 2, 8)
+        sel = tk.Frame(pb, bg=BG_CARD)
+        sel.pack(fill="x", padx=8, pady=(10, 6))
+        ttk.Combobox(sel, textvariable=self.pert_feat,
                      values=PERTURB_DISPLAY, state="readonly",
-                     font=("Helvetica", 11)) \
-            .pack(fill="x", padx=8, pady=(0, 6))
-
-        er = tk.Frame(pb, bg=BG_CARD)
-        er.pack(fill="x", padx=8, pady=(0, 6))
-        lbl(er, "Amount:", size=10).pack(side="left", padx=(0, 4))
-        self.pert_entry = tk.Entry(er, font=("Helvetica", 11), width=9,
+                     font=("Helvetica", 10), width=16) \
+            .pack(side="left", fill="x", expand=True)
+        lbl(sel, "Amount:", size=10).pack(side="left", padx=(8, 4))
+        self.pert_entry = tk.Entry(sel, font=("Helvetica", 11), width=7,
                                    relief="solid", bd=1, justify="center")
         self.pert_entry.insert(0, "0.00")
-        self.pert_entry.pack(side="left", ipady=4)
+        self.pert_entry.pack(side="left", ipady=3)
 
         br = tk.Frame(pb, bg=BG_CARD)
         br.pack(fill="x", padx=8, pady=(0, 6))
-        btn(br, "Add", self._add_perturbation, ORANGE, width=10) \
+        btn(br, "Add", self._add_perturbation, ORANGE, width=9) \
             .pack(side="left", padx=(0, 6))
         btn(br, "Clear all", self._clear_all_perturbations,
-            GRAY, fg="black", width=10).pack(side="left")
+            GRAY, fg="black", width=9).pack(side="left")
 
-        # Count label
         self.pert_count_lbl = lbl(pb, "0 active", fg="gray", size=10)
         self.pert_count_lbl.pack(fill="x", padx=8, pady=(0, 4))
 
-        # Scrollable list of active perturbations
         list_outer = tk.Frame(pb, bg="#F4F4F4",
                               highlightbackground="#DDDDDD", highlightthickness=1)
         list_outer.pack(fill="x", padx=8, pady=(0, 10))
@@ -1102,101 +1276,162 @@ class App:
         self._rebuild_pert_list_ui()
 
         # ── Simulation ────────────────────────────────────────────────────────
-        sim = section(inner, "Simulation")
-
-        # Session status
+        sim = group("Simulation", 3, (8, 0))
         self.session_lbl = lbl(sim, "No active session.", fg="gray", size=10)
-        self.session_lbl.pack(fill="x", padx=8, pady=(6, 4))
-
+        self.session_lbl.pack(fill="x", padx=8, pady=(10, 6))
         r1 = tk.Frame(sim, bg=BG_CARD)
         r1.pack(fill="x", padx=8, pady=(0, 6))
-        btn(r1, "Start", self.start, BLUE, width=12).pack(side="left", padx=(0, 8))
-        btn(r1, "Stop",  self.stop,  RED,  width=12).pack(side="left")
+        btn(r1, "Start", self.start, BLUE, width=9).pack(side="left", padx=(0, 6))
+        btn(r1, "Stop",  self.stop,  RED,  width=9).pack(side="left")
         r2 = tk.Frame(sim, bg=BG_CARD)
         r2.pack(fill="x", padx=8, pady=(0, 10))
-        btn(r2, "Step",  self.step,      GREEN,        width=12).pack(side="left", padx=(0, 8))
-        btn(r2, "Reset", self.reset_env, GRAY, fg="black", width=12).pack(side="left")
+        btn(r2, "Step",  self.step,      GREEN, width=9).pack(side="left", padx=(0, 6))
+        btn(r2, "Reset", self.reset_env, GRAY, fg="black", width=9).pack(side="left")
 
-    def build_center(self, parent):
-        _, inner = card(parent, "Action comparison", col=1, row=0, padx=(6, 6))
-        tbl = tk.Frame(inner, bg=BG_CARD)
-        tbl.pack(fill="both", expand=True)
-        for c in range(4): tbl.columnconfigure(c, weight=1)
+    # Short device names for the compact action-comparison table.
+    _DEV_SHORT = {"cooling_device": "cool", "dhw_storage": "dhw",
+                  "electrical_storage": "elec"}
 
-        for col, (h, bg, fg) in enumerate([
-            ("Device",          BG_CARD,      "gray"),
-            ("Clean input",     BLUE_LIGHT,   BLUE),
-            ("Perturbed input", ORANGE_LIGHT, ORANGE),
-            ("Difference",      BG_CARD,      "gray"),
-        ]):
-            tk.Label(tbl, text=h, bg=bg, fg=fg,
-                     font=("Helvetica", 12, "bold"),
-                     anchor="center", pady=10) \
-                .grid(row=0, column=col, sticky="ew", padx=(0, 4), pady=(0, 8))
+    def build_side_panel(self, parent):
+        """Compact left panel in the plot area: current observations plus the
+        action comparison (devices), in small form."""
+        outer, inner = card(parent, "Current state", col=0, row=1, padx=(0, 8))
+        outer.grid(pady=(8, 0), sticky="nsew")
 
-        for row, dev in enumerate(ACTION_NAMES, start=1):
-            lbl(tbl, dev, bold=True, size=12, padx=10) \
-                .grid(row=row, column=0, sticky="ew",
-                      padx=(0, 4), pady=(0, 4), ipady=5)
-            cl = tk.Label(tbl, text="0.000", bg=BLUE_LIGHT, fg=BLUE,
-                          font=("Helvetica", 22, "bold"),
-                          anchor="center", pady=20)
-            cl.grid(row=row, column=1, sticky="ew", padx=(0, 4), pady=(0, 8))
-            self.clean_lbl[dev] = cl
-            pl = tk.Label(tbl, text="0.000", bg=ORANGE_LIGHT, fg=ORANGE,
-                          font=("Helvetica", 22, "bold"),
-                          anchor="center", pady=20)
-            pl.grid(row=row, column=2, sticky="ew", padx=(0, 4), pady=(0, 8))
-            self.pert_lbl[dev] = pl
-            dl = tk.Label(tbl, text="D 0.000", bg=BG_CARD, fg=GREEN,
-                          font=("Helvetica", 16, "bold"),
-                          anchor="center", pady=20)
-            dl.grid(row=row, column=3, sticky="ew", padx=(0, 4), pady=(0, 8))
-            self.diff_lbl[dev] = dl
-
-        leg = tk.Frame(inner, bg=BG_CARD)
-        leg.pack(fill="x", pady=(12, 0))
-        for color, label, desc in [
-            (GREEN,  "D < 0.05",    "robust"),
-            (ORANGE, "D 0.05-0.20", "sensitive"),
-            (RED,    "D > 0.20",    "fragile"),
-        ]:
-            lbl(leg, label, fg=color, bold=True, size=11) \
-                .pack(side="left", padx=(0, 4))
-            lbl(leg, desc, fg="gray", size=11) \
-                .pack(side="left", padx=(0, 20))
-
-    def build_right(self, parent):
-        outer, inner = card(parent, "Current observations", col=2, row=0, padx=(0, 0))
-        outer.rowconfigure(1, weight=1)
-        inner.rowconfigure(1, weight=1)
-        inner.columnconfigure(0, weight=1)
-
+        # ── Observations (small list) ─────────────────────────────────────────
+        lbl(inner, "Observations", bold=True, size=10).pack(fill="x", pady=(0, 2))
         obs_f = tk.Frame(inner, bg=BG_CARD)
         obs_f.pack(fill="x")
         obs_f.columnconfigure(1, weight=1)
         for i, name in enumerate(OBS_NAMES_DISPLAY):
             fg_name = "#5856D6" if name == "comfort_band" else "gray"
-            lbl(obs_f, name, fg=fg_name, size=11) \
-                .grid(row=i, column=0, sticky="w", padx=(0, 12), pady=2)
-            w = lbl(obs_f, "---", bold=True, size=11, anchor="e")
-            w.grid(row=i, column=1, sticky="e", pady=2)
+            # Show the short display name to keep the panel narrow, but key the
+            # widget by the full obs name so update_obs() can find it.
+            lbl(obs_f, OBS_DISPLAY.get(name, name), fg=fg_name, size=8) \
+                .grid(row=i, column=0, sticky="w", padx=(0, 10))
+            w = lbl(obs_f, "---", bold=True, size=8, anchor="e")
+            w.grid(row=i, column=1, sticky="e")
             self.obs_lbl[name] = w
 
-        lbl(inner, "Console", bold=True, size=12) \
-            .pack(fill="x", pady=(12, 4))
-        self.console = tk.Text(inner, wrap="word", state="disabled",
-                               font=("Courier", 11), relief="flat", bd=0,
-                               bg="#F8F8F8", padx=8, pady=8, height=10)
-        self.console.pack(fill="both", expand=True)
-        log(self.console, "GUI ready.")
-        log(self.console, "Load the neural policy before switching to it.")
-        log(self.console, "Add perturbations and press Start to begin a session.")
+        # ── Action comparison (devices), compact ──────────────────────────────
+        lbl(inner, "Action comparison", bold=True, size=10).pack(fill="x", pady=(10, 2))
+        tbl = tk.Frame(inner, bg=BG_CARD)
+        tbl.pack(fill="x")
+        for c in range(4):
+            tbl.columnconfigure(c, weight=1)
+        for col, (h, fg) in enumerate([("dev", "gray"), ("clean", BLUE),
+                                       ("pert", ORANGE), ("diff", "gray")]):
+            tk.Label(tbl, text=h, bg=BG_CARD, fg=fg,
+                     font=("Helvetica", 8, "bold"), anchor="center") \
+                .grid(row=0, column=col, sticky="ew", padx=1, pady=(0, 2))
+        for r, dev in enumerate(ACTION_NAMES, start=1):
+            lbl(tbl, self._DEV_SHORT.get(dev, dev), bold=True, size=8) \
+                .grid(row=r, column=0, sticky="w", padx=1, pady=1)
+            cl = tk.Label(tbl, text="0.000", bg=BLUE_LIGHT, fg=BLUE,
+                          font=("Helvetica", 10, "bold"), anchor="center", pady=4)
+            cl.grid(row=r, column=1, sticky="ew", padx=1, pady=1)
+            self.clean_lbl[dev] = cl
+            pl = tk.Label(tbl, text="0.000", bg=ORANGE_LIGHT, fg=ORANGE,
+                          font=("Helvetica", 10, "bold"), anchor="center", pady=4)
+            pl.grid(row=r, column=2, sticky="ew", padx=1, pady=1)
+            self.pert_lbl[dev] = pl
+            dl = tk.Label(tbl, text="D 0.000", bg=BG_CARD, fg=GREEN,
+                          font=("Helvetica", 8, "bold"), anchor="center", pady=4)
+            dl.grid(row=r, column=3, sticky="ew", padx=1, pady=1)
+            self.diff_lbl[dev] = dl
+
+        # Sensitivity legend (compact).
+        leg = tk.Frame(inner, bg=BG_CARD)
+        leg.pack(fill="x", pady=(8, 0))
+        for color, text in [(GREEN, "<0.05 robust"),
+                            (ORANGE, "0.05-0.20 sens."),
+                            (RED, ">0.20 fragile")]:
+            lbl(leg, text, fg=color, size=8).pack(anchor="w")
+
+    # ── DISABLED in the navbar layout — kept for later (see build()) ──────────
+    # "Action comparison" panel: clean vs perturbed action table + legend.
+    # def build_center(self, parent):
+    #     _, inner = card(parent, "Action comparison", col=1, row=0, padx=(6, 6))
+    #     tbl = tk.Frame(inner, bg=BG_CARD)
+    #     tbl.pack(fill="both", expand=True)
+    #     for c in range(4): tbl.columnconfigure(c, weight=1)
+    #
+    #     for col, (h, bg, fg) in enumerate([
+    #         ("Device",          BG_CARD,      "gray"),
+    #         ("Clean input",     BLUE_LIGHT,   BLUE),
+    #         ("Perturbed input", ORANGE_LIGHT, ORANGE),
+    #         ("Difference",      BG_CARD,      "gray"),
+    #     ]):
+    #         tk.Label(tbl, text=h, bg=bg, fg=fg,
+    #                  font=("Helvetica", 12, "bold"),
+    #                  anchor="center", pady=10) \
+    #             .grid(row=0, column=col, sticky="ew", padx=(0, 4), pady=(0, 8))
+    #
+    #     for row, dev in enumerate(ACTION_NAMES, start=1):
+    #         lbl(tbl, dev, bold=True, size=12, padx=10) \
+    #             .grid(row=row, column=0, sticky="ew",
+    #                   padx=(0, 4), pady=(0, 4), ipady=5)
+    #         cl = tk.Label(tbl, text="0.000", bg=BLUE_LIGHT, fg=BLUE,
+    #                       font=("Helvetica", 22, "bold"),
+    #                       anchor="center", pady=20)
+    #         cl.grid(row=row, column=1, sticky="ew", padx=(0, 4), pady=(0, 8))
+    #         self.clean_lbl[dev] = cl
+    #         pl = tk.Label(tbl, text="0.000", bg=ORANGE_LIGHT, fg=ORANGE,
+    #                       font=("Helvetica", 22, "bold"),
+    #                       anchor="center", pady=20)
+    #         pl.grid(row=row, column=2, sticky="ew", padx=(0, 4), pady=(0, 8))
+    #         self.pert_lbl[dev] = pl
+    #         dl = tk.Label(tbl, text="D 0.000", bg=BG_CARD, fg=GREEN,
+    #                       font=("Helvetica", 16, "bold"),
+    #                       anchor="center", pady=20)
+    #         dl.grid(row=row, column=3, sticky="ew", padx=(0, 4), pady=(0, 8))
+    #         self.diff_lbl[dev] = dl
+    #
+    #     leg = tk.Frame(inner, bg=BG_CARD)
+    #     leg.pack(fill="x", pady=(12, 0))
+    #     for color, label, desc in [
+    #         (GREEN,  "D < 0.05",    "robust"),
+    #         (ORANGE, "D 0.05-0.20", "sensitive"),
+    #         (RED,    "D > 0.20",    "fragile"),
+    #     ]:
+    #         lbl(leg, label, fg=color, bold=True, size=11) \
+    #             .pack(side="left", padx=(0, 4))
+    #         lbl(leg, desc, fg="gray", size=11) \
+    #             .pack(side="left", padx=(0, 20))
+
+    # ── DISABLED in the navbar layout — kept for later (see build()) ──────────
+    # "Current observations" panel + "Console" text widget.
+    # def build_right(self, parent):
+    #     outer, inner = card(parent, "Current observations", col=2, row=0, padx=(0, 0))
+    #     outer.rowconfigure(1, weight=1)
+    #     inner.rowconfigure(1, weight=1)
+    #     inner.columnconfigure(0, weight=1)
+    #
+    #     obs_f = tk.Frame(inner, bg=BG_CARD)
+    #     obs_f.pack(fill="x")
+    #     obs_f.columnconfigure(1, weight=1)
+    #     for i, name in enumerate(OBS_NAMES_DISPLAY):
+    #         fg_name = "#5856D6" if name == "comfort_band" else "gray"
+    #         lbl(obs_f, name, fg=fg_name, size=11) \
+    #             .grid(row=i, column=0, sticky="w", padx=(0, 12), pady=2)
+    #         w = lbl(obs_f, "---", bold=True, size=11, anchor="e")
+    #         w.grid(row=i, column=1, sticky="e", pady=2)
+    #         self.obs_lbl[name] = w
+    #
+    #     lbl(inner, "Console", bold=True, size=12) \
+    #         .pack(fill="x", pady=(12, 4))
+    #     self.console = tk.Text(inner, wrap="word", state="disabled",
+    #                            font=("Courier", 11), relief="flat", bd=0,
+    #                            bg="#F8F8F8", padx=8, pady=8, height=10)
+    #     self.console.pack(fill="both", expand=True)
+    #     log(self.console, "GUI ready.")
+    #     log(self.console, "Load the neural policy before switching to it.")
+    #     log(self.console, "Add perturbations and press Start to begin a session.")
 
     def build_unified_plot(self, parent):
         """Unified plot: baseline (blue) + sim (orange)."""
-        outer, inner = card(parent,"Dataset plot (baseline vs simulation)", col=0, row=1, padx=(0, 0), colspan=3)
-        outer.grid(pady=(6, 0), sticky="nsew")
+        outer, inner = card(parent,"Dataset plot (baseline vs simulation)", col=1, row=1, padx=(0, 0))
+        outer.grid(pady=(8, 0), sticky="nsew")
         self.unified_plot_inner = inner
 
         ctrl_bar = tk.Frame(inner, bg=BG_CARD)
@@ -1219,8 +1454,17 @@ class App:
             .pack(side="left", padx=(0, 10))
         btn(ctrl_bar, "Load sim file", self.load_sim_file,
             "#5856D6", width=14).pack(side="left", padx=(0, 10))
+        btn(ctrl_bar, "Clear runs", self._clear_archived_runs,
+            "#8E8E93", width=11).pack(side="left", padx=(0, 10))
 
         tk.Checkbutton(ctrl_bar, text="Live plot", variable=self.live_plot_var,
+                       bg=BG_CARD, activebackground=BG_CARD,
+                       font=("Helvetica", 10)) \
+            .pack(side="left", padx=(0, 10))
+
+        tk.Checkbutton(ctrl_bar, text="Deviation (perturbed - clean)",
+                       variable=self.deviation_var,
+                       command=lambda: self._draw_unified_plot(),
                        bg=BG_CARD, activebackground=BG_CARD,
                        font=("Helvetica", 10)) \
             .pack(side="left", padx=(0, 10))
@@ -1229,11 +1473,58 @@ class App:
                                   fg="gray", size=10)
         self.sim_status_lbl.pack(side="left")
 
-        self.unified_placeholder = lbl(
-            inner,
-            "Load a dataset CSV (baseline) and/or a simulation CSV to display the plot here.",
-            fg="gray", size=11, anchor="center")
-        self.unified_placeholder.pack(expand=True, fill="both", pady=20)
+        # Create the figure + the ONE embedded canvas now (eagerly) and pack it,
+        # instead of lazily on the first data draw. Lazy creation + the window
+        # resizing afterwards is what left a stale "ghost" strip of an earlier
+        # render on some platforms (Windows/HiDPI TkAgg).
+        self.unified_plot_fig = Figure(figsize=(12, 7), facecolor=BG_CARD,
+                                       layout="tight")
+        self.unified_plot_ax  = self.unified_plot_fig.add_subplot(111)
+        self.unified_plot_canvas = FigureCanvasTkAgg(
+            self.unified_plot_fig, master=inner)
+        cw = self.unified_plot_canvas.get_tk_widget()
+        cw.configure(bg=BG_CARD, highlightthickness=0)
+        cw.pack(fill="both", expand=True, padx=4, pady=(0, 6))
+        # Repaint fully (not just blit) whenever the canvas is resized, so no
+        # stale render of a previous size lingers underneath. add="+" is
+        # ESSENTIAL: it appends to FigureCanvasTkAgg's own <Configure> handler
+        # (which resizes the figure to fill the widget) instead of replacing it
+        # — replacing it would freeze the figure at its small native size.
+        self._plot_resize_after = None
+        cw.bind("<Configure>", self._on_plot_resize, add="+")
+        self._show_plot_empty_state()
+        # Once the window has settled at its final size, force one clean repaint
+        # so the very first render already matches the real canvas size.
+        self.root.after(300, self._redraw_plot_canvas)
+
+    def _show_plot_empty_state(self):
+        ax = self.unified_plot_ax
+        if ax is None:
+            return
+        ax.cla()
+        ax.axis("off")
+        ax.text(0.5, 0.5,
+                "Load a dataset CSV (baseline) and/or a simulation CSV "
+                "to display the plot here.",
+                ha="center", va="center", color="gray", fontsize=11,
+                transform=ax.transAxes)
+        if self.unified_plot_canvas is not None:
+            self.unified_plot_canvas.draw_idle()
+
+    def _on_plot_resize(self, event):
+        # Debounce a burst of resize events into a single full redraw.
+        if self._plot_resize_after is not None:
+            try:
+                self.root.after_cancel(self._plot_resize_after)
+            except Exception:
+                pass
+        self._plot_resize_after = self.root.after(60, self._redraw_plot_canvas)
+
+    def _redraw_plot_canvas(self):
+        self._plot_resize_after = None
+        if self.unified_plot_canvas is not None:
+            # Full draw() clears the backing store, removing any ghost strip.
+            self.unified_plot_canvas.draw()
         
     def _on_close(self):
         if self.unified_plot_fig is not None:
