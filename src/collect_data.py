@@ -95,6 +95,8 @@ def _simulate(agent, env) -> pd.DataFrame:
         building = env.buildings[0]
         next_obs, rewards, terminated, truncated, _ = env.step(actions)
 
+        indoor_temp = building.indoor_dry_bulb_temperature[building.time_step - 1]
+
         # Read SOC from the building object at the current (post-step) index.
         # After step() the env has advanced, so the acted-upon SOC is at
         # building.time_step - 1  (same fix as in gui.py and the original
@@ -105,7 +107,7 @@ def _simulate(agent, env) -> pd.DataFrame:
         rows.append({
             # Observations
             "hour":                   get_obs("hour"),
-            "indoor_temp":            get_obs("indoor_dry_bulb_temperature"),
+            "indoor_temp":            indoor_temp,
             "cooling_setpoint":       get_obs("indoor_dry_bulb_temperature_cooling_set_point"),
             "outdoor_temp":           get_obs("outdoor_dry_bulb_temperature"),
             "outdoor_temp_predicted": get_obs("outdoor_dry_bulb_temperature_predicted_1"),
@@ -303,8 +305,15 @@ class LinearRegressorAgent:
         return packed
 
 
-def collect_linear_regressor(env: CityLearnEnv) -> None:
-    """Check artefacts, simulate a clean LR episode, and save the dataset."""
+def collect_linear_regressor(env: CityLearnEnv, exit_on_missing: bool = True) -> None:
+    """Check artefacts, simulate a clean LR episode, and save the dataset.
+
+    ``exit_on_missing`` controls what happens when the model artefacts are
+    not found: by default the script exits (standalone option 2), but when
+    called as part of ``collect_both`` (option 3) it should just skip the
+    LinearRegressor step and let the script finish normally, since the RBC
+    dataset was already collected and saved successfully.
+    """
     ok, msg = _check_model_artefacts()
     if not ok:
         print(f"\n  ✗  Cannot collect LinearRegressor data.\n  {msg}")
@@ -314,7 +323,9 @@ def collect_linear_regressor(env: CityLearnEnv) -> None:
             "    2. Train the regressor:      python linear_regressor.py\n"
             "    3. Re-run this script        → option 2"
         )
-        sys.exit(1)
+        if exit_on_missing:
+            sys.exit(1)
+        return
 
     print(f"\n{msg}")
     print("Collecting LinearRegressor (clean, unperturbed) data …")
@@ -325,6 +336,16 @@ def collect_linear_regressor(env: CityLearnEnv) -> None:
     df.to_csv(LR_OUTPUT_PATH, index=False)
     print(f"  ✓  {df.shape[0]} timesteps saved → {LR_OUTPUT_PATH}")
     print("     (Load this CSV as the baseline in the GUI when using the neural policy.)")
+
+
+def collect_both(env: CityLearnEnv) -> None:
+    """Collect the RBC dataset, then (if model artefacts are available) the
+    LinearRegressor dataset too, in a single run. Each call to ``_simulate``
+    resets the env internally, so the same ``env`` instance can safely be
+    reused for both episodes."""
+    collect_rbc(env)
+    print()
+    collect_linear_regressor(env, exit_on_missing=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,14 +385,19 @@ def terminal_menu() -> str:
     print("         → datasets/linear_regressor_dataset.csv")
     print("         (baseline for the neural policy in the GUI)")
     print()
+    print("  [3]  Collect BOTH datasets (RBC, then LinearRegressor)")
+    print("         → both CSVs above, in one run")
+    print("         (LinearRegressor step is skipped with a warning if model")
+    print("          artefacts are missing — the RBC dataset is saved either way)")
+    print()
     print("  [q]  Quit")
     print(separator)
 
     while True:
-        choice = input("  Choose [1/2/q]: ").strip().lower()
-        if choice in ("1", "2", "q"):
+        choice = input("  Choose [1/2/3/q]: ").strip().lower()
+        if choice in ("1", "2", "3", "q"):
             return choice
-        print("  Invalid choice. Please enter 1, 2, or q.")
+        print("  Invalid choice. Please enter 1, 2, 3, or q.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -406,5 +432,7 @@ if __name__ == "__main__":
         collect_rbc(env)
     elif choice == "2":
         collect_linear_regressor(env)
+    elif choice == "3":
+        collect_both(env)
 
     print("\nDone.\n")

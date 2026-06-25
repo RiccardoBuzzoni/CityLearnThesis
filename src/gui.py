@@ -305,8 +305,8 @@ class App:
         self.root = root
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.title("RBC vs Neural Policy")
-        self.root.geometry("1920x1080+0+0")
         self.root.minsize(1280, 720)
+        self._configure_window_geometry()
         self.root.configure(bg=BG_APP)
 
         # Action-comparison labels (clean/pert/diff) and observation labels are
@@ -642,7 +642,14 @@ class App:
 
             obs[0][obs_names.index('electrical_storage_soc')] = building.electrical_storage.soc[building.time_step - 1]
             obs[0][obs_names.index('dhw_storage_soc')] = building.dhw_storage.soc[building.time_step - 1]
-            
+            # Same "post-step" fix as the SOC lines above, applied to indoor
+            # temperature: the obs array returned by env.step() carries the
+            # pre-dynamics value (still tracking the setpoint), while the
+            # building object already holds the temperature actually reached
+            # after the dynamics model has processed this step's cooling_device
+            # action. collect_data.py reads it the same way (see _simulate()).
+            obs[0][obs_names.index('indoor_dry_bulb_temperature')] = building.indoor_dry_bulb_temperature[building.time_step - 1]
+
             self.store(obs)
             self.step_n += 1
             ctrl = "Neural" if self.policy_var.get() == "neural" else "RBC"
@@ -959,6 +966,26 @@ class App:
             return bool((~vals.isin(["", "[]", "nan", "None", "null"])).any())
         return False
 
+    def _get_setpoint_and_band(self):
+        """Returns (steps, setpoint_values, band) for the comfort-band
+        shading, or (None, None, None) if no setpoint series is available
+        yet. The setpoint is exogenous — it doesn't change with the chosen
+        controller — so the baseline dataset is preferred (it's the longest,
+        most "complete" series) and the live/sim session is used otherwise."""
+        SP = "indoor_dry_bulb_temperature_cooling_set_point"
+        band = float(getattr(self.rbc, "comfort_band", 2.0)) if self.rbc else 2.0
+
+        df_d = self.dataset_df
+        if df_d is not None and SP in df_d.columns:
+            sp = df_d[SP].to_numpy(dtype=float)
+            return np.arange(len(sp)), sp, band
+
+        steps, sp = self._get_sim_series(f"{SP}_clean")
+        if sp is not None and len(sp):
+            return steps, sp, band
+
+        return None, None, None
+
     def _draw_unified_plot(self, quiet=False):
         disp = self.unified_plot_col_var.get()
         col  = DISPLAY_TO_OBS.get(disp, disp)   # actual observation name
@@ -1007,6 +1034,24 @@ class App:
         # spread out and small effects become readable. Only meaningful for the
         # clean/perturbed obs pairs, never for the single reward series.
         deviation = bool(self.deviation_var.get()) and not is_reward
+
+        # Comfort band shading, mirroring evaluate.py's plot_cooling_device.
+        # The setpoint is exogenous (it doesn't depend on which policy is
+        # running), so whichever source is available — static baseline or
+        # live/sim session — is used as-is; drawn first so the temperature
+        # lines sit on top of it.
+        if col == "indoor_dry_bulb_temperature" and not deviation:
+            band_steps, band_sp, band = self._get_setpoint_and_band()
+            if (band_steps is not None
+                    and band_sp is not None
+                    and band is not None):
+                ax.fill_between(band_steps, band_sp + band, band_sp - band,
+                                color="green", alpha=0.15,
+                                label="Comfort band", zorder=0)
+                
+                ax.plot(band_steps, band_sp, "--",
+                        color="gray", linewidth=1.2,
+                        label="Cooling setpoint", zorder=1)
 
         if baseline_series is not None and not deviation:
             ax.plot(np.arange(len(baseline_series)), baseline_series,
@@ -1061,6 +1106,9 @@ class App:
                           or not len(clean_series)):
             draw_current_pert = False
         if draw_current_pert:
+
+            assert clean_series is not None
+
             if live:
                 cur_color = run_color(len(self._archived_runs))
                 cur_label = (f"run {len(self._archived_runs) + 1} "
@@ -1095,7 +1143,8 @@ class App:
 
         # draw_idle() coalesces redraws and lets Tk render on the next idle
         # cycle instead of blocking the event loop on every live step.
-        self.unified_plot_canvas.draw_idle()
+        if self.unified_plot_canvas is not None:
+            self.unified_plot_canvas.draw_idle()
 
         if not quiet:
             parts = []
@@ -1186,6 +1235,29 @@ class App:
             text=f"{n} active", fg=ORANGE if n else "gray")
 
     # ── UI Build ──────────────────────────────────────────────────────────────
+    def _configure_window_geometry(self):
+        """Open maximised on whatever screen the app runs on, instead of a
+        hardcoded 1920x1080. A fixed resolution looks fine on the machine it
+        was tuned on, but on any other screen (different resolution, or a
+        different Windows display-scaling %) it can open off-screen, oversized,
+        or cut off by the taskbar. 'Zoomed' adapts to the real screen/work
+        area; the geometry fallback below only kicks in on platforms where the
+        window manager doesn't support a zoomed state."""
+        try:
+            self.root.state("zoomed")          # Windows, and some Linux WMs
+            return
+        except tk.TclError:
+            pass
+        try:
+            self.root.attributes("-zoomed", True)   # X11 (Linux)
+            return
+        except tk.TclError:
+            pass
+        # Last-resort fallback: size to most of the screen, centred.
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w, h = int(sw * 0.9), int(sh * 0.9)
+        self.root.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
     def build(self):
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
@@ -1197,7 +1269,7 @@ class App:
         # with the unified plot filling the rest.
         body.rowconfigure(0, weight=0)
         body.rowconfigure(1, weight=1)
-        body.columnconfigure(0, weight=0)   # compact side panel
+        body.columnconfigure(0, weight=0, minsize=300)   # compact side panel
         body.columnconfigure(1, weight=1)   # plot fills the rest
 
         self.build_navbar(body)
@@ -1299,7 +1371,7 @@ class App:
         outer.grid(pady=(8, 0), sticky="nsew")
 
         # ── Observations (small list) ─────────────────────────────────────────
-        lbl(inner, "Observations", bold=True, size=10).pack(fill="x", pady=(0, 2))
+        lbl(inner, "Observations", bold=True, size=12).pack(fill="x", pady=(0, 4))
         obs_f = tk.Frame(inner, bg=BG_CARD)
         obs_f.pack(fill="x")
         obs_f.columnconfigure(1, weight=1)
@@ -1307,14 +1379,14 @@ class App:
             fg_name = "#5856D6" if name == "comfort_band" else "gray"
             # Show the short display name to keep the panel narrow, but key the
             # widget by the full obs name so update_obs() can find it.
-            lbl(obs_f, OBS_DISPLAY.get(name, name), fg=fg_name, size=8) \
-                .grid(row=i, column=0, sticky="w", padx=(0, 10))
-            w = lbl(obs_f, "---", bold=True, size=8, anchor="e")
-            w.grid(row=i, column=1, sticky="e")
+            lbl(obs_f, OBS_DISPLAY.get(name, name), fg=fg_name, size=11) \
+                .grid(row=i, column=0, sticky="w", padx=(0, 12), pady=3)
+            w = lbl(obs_f, "---", bold=True, size=11, anchor="e")
+            w.grid(row=i, column=1, sticky="e", pady=3)
             self.obs_lbl[name] = w
 
         # ── Action comparison (devices), compact ──────────────────────────────
-        lbl(inner, "Action comparison", bold=True, size=10).pack(fill="x", pady=(10, 2))
+        lbl(inner, "Action comparison", bold=True, size=12).pack(fill="x", pady=(14, 4))
         tbl = tk.Frame(inner, bg=BG_CARD)
         tbl.pack(fill="x")
         for c in range(4):
@@ -1322,31 +1394,31 @@ class App:
         for col, (h, fg) in enumerate([("dev", "gray"), ("clean", BLUE),
                                        ("pert", ORANGE), ("diff", "gray")]):
             tk.Label(tbl, text=h, bg=BG_CARD, fg=fg,
-                     font=("Helvetica", 8, "bold"), anchor="center") \
-                .grid(row=0, column=col, sticky="ew", padx=1, pady=(0, 2))
+                     font=("Helvetica", 11, "bold"), anchor="center") \
+                .grid(row=0, column=col, sticky="ew", padx=2, pady=(0, 4))
         for r, dev in enumerate(ACTION_NAMES, start=1):
-            lbl(tbl, self._DEV_SHORT.get(dev, dev), bold=True, size=8) \
-                .grid(row=r, column=0, sticky="w", padx=1, pady=1)
+            lbl(tbl, self._DEV_SHORT.get(dev, dev), bold=True, size=11) \
+                .grid(row=r, column=0, sticky="w", padx=2, pady=2)
             cl = tk.Label(tbl, text="0.000", bg=BLUE_LIGHT, fg=BLUE,
-                          font=("Helvetica", 10, "bold"), anchor="center", pady=4)
-            cl.grid(row=r, column=1, sticky="ew", padx=1, pady=1)
+                          font=("Helvetica", 13, "bold"), anchor="center", pady=6)
+            cl.grid(row=r, column=1, sticky="ew", padx=2, pady=2)
             self.clean_lbl[dev] = cl
             pl = tk.Label(tbl, text="0.000", bg=ORANGE_LIGHT, fg=ORANGE,
-                          font=("Helvetica", 10, "bold"), anchor="center", pady=4)
-            pl.grid(row=r, column=2, sticky="ew", padx=1, pady=1)
+                          font=("Helvetica", 13, "bold"), anchor="center", pady=6)
+            pl.grid(row=r, column=2, sticky="ew", padx=2, pady=2)
             self.pert_lbl[dev] = pl
             dl = tk.Label(tbl, text="D 0.000", bg=BG_CARD, fg=GREEN,
-                          font=("Helvetica", 8, "bold"), anchor="center", pady=4)
-            dl.grid(row=r, column=3, sticky="ew", padx=1, pady=1)
+                          font=("Helvetica", 11, "bold"), anchor="center", pady=6)
+            dl.grid(row=r, column=3, sticky="ew", padx=2, pady=2)
             self.diff_lbl[dev] = dl
 
         # Sensitivity legend (compact).
         leg = tk.Frame(inner, bg=BG_CARD)
-        leg.pack(fill="x", pady=(8, 0))
+        leg.pack(fill="x", pady=(10, 0))
         for color, text in [(GREEN, "<0.05 robust"),
                             (ORANGE, "0.05-0.20 sens."),
                             (RED, ">0.20 fragile")]:
-            lbl(leg, text, fg=color, size=8).pack(anchor="w")
+            lbl(leg, text, fg=color, size=10).pack(anchor="w", pady=1)
 
     # ── DISABLED in the navbar layout — kept for later (see build()) ──────────
     # "Action comparison" panel: clean vs perturbed action table + legend.
@@ -1535,7 +1607,23 @@ class App:
     def mainloop(self):
         self.root.mainloop()
 
+def _apply_real_dpi_scaling(root):
+    """Make Tk's scaling follow the screen's *actual* DPI instead of a
+    hardcoded value. `tk scaling 1.0` means "1 point = 1 physical pixel",
+    which is only correct on an old 72dpi screen — on a normal 96dpi monitor
+    it makes every font/widget render ~25% smaller than intended, and on a
+    HiDPI/scaled Windows display (e.g. 125-200%) it can look tiny, which is
+    almost certainly what happened on your colleague's machine. Computing the
+    real DPI and feeding it to Tk keeps text/widgets a consistent, readable
+    size on any screen."""
+    try:
+        dpi = root.winfo_fpixels("1i")   # real pixels per inch on this screen
+        root.tk.call("tk", "scaling", dpi / 72.0)
+    except tk.TclError:
+        pass
+
+
 if __name__ == "__main__":
     root = tk.Tk()
-    root.tk.call('tk', 'scaling', 1.0)
+    _apply_real_dpi_scaling(root)
     App(root).mainloop()
