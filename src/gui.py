@@ -547,20 +547,6 @@ class App:
         self._load_sim_for_plot(self._sim_path, archived=True)
         self._update_session_label()
 
-    def _pert_summary(self, pert_list) -> str:
-        """Short, legend-friendly summary of a perturbation list."""
-        parts = []
-        for p in pert_list:
-            feat = p.get("feat", "")
-            name = OBS_DISPLAY.get(feat, feat)
-            amt  = p.get("amount", 0.0)
-            sign = "=" if p.get("mode") == "assign" else ("+" if amt >= 0 else "")
-            parts.append(f"{name}{sign}{amt:g}")
-        summary = ", ".join(parts)
-        if len(summary) > 40:
-            summary = summary[:37] + "..."
-        return summary or "no perturbation"
-
     def _archive_current_run(self):
         """Snapshot the just-finished run so its perturbed curve stays on the
         plot. No-op unless the run had perturbations and at least one step."""
@@ -577,7 +563,7 @@ class App:
         self._archived_runs.append({
             "cols":  cols,
             "color": color,
-            "label": f"run {idx + 1} ({self._pert_summary(self.pert_list)})",
+            "label": f"run {idx + 1}",
         })
         log(self.console,
             f"Run {idx + 1} kept on plot for comparison [{color}].")
@@ -1111,8 +1097,7 @@ class App:
 
             if live:
                 cur_color = run_color(len(self._archived_runs))
-                cur_label = (f"run {len(self._archived_runs) + 1} "
-                             f"({self._pert_summary(self.pert_list)})")
+                cur_label = f"run {len(self._archived_runs) + 1}"
             else:
                 cur_color = PURPLE
                 cur_label = f"{disp} (perturbed)"
