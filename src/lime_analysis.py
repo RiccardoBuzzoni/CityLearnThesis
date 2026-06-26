@@ -25,7 +25,7 @@ from linear_regressor import (
 LIME_TARGETS = TARGET_COLS  # ["cooling_device", "dhw_storage", "electrical_storage"]
 
 # Output directory for LIME plots
-LIME_OUTPUT_DIR = "../lime_analysis_results"
+LIME_OUTPUT_DIR = "../results/lime_analysis"
 os.makedirs(LIME_OUTPUT_DIR, exist_ok=True)
 
 # Number of samples LIME uses internally to fit its local linear approximation

@@ -515,8 +515,9 @@ class App:
             return
         ts     = datetime.now().strftime("%d%m%Y_%H%M")
         policy = "rbc" if self.policy_var.get() == "rbc" else "linearregressor"
-        sim_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "simulations")
+        sim_dir = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "data", "simulations"))
         os.makedirs(sim_dir, exist_ok=True)
         self._sim_path    = os.path.join(sim_dir, f"sim_{policy}_{ts}.csv")
         self._sim_file    = open(self._sim_path, "w", newline="", encoding="utf-8")
@@ -711,7 +712,7 @@ class App:
         log(self.console, "Simulation paused. Press Start to resume.")
 
     # ── Load model ────────────────────────────────────────────────────────────
-    _MODEL_SEARCH_DIR = ["../linear_regressor_results"]
+    _MODEL_SEARCH_DIR = ["../results/linear_regressor"]
 
     def _auto_load_model(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -745,8 +746,14 @@ class App:
 
     # ── Baseline dataset ──────────────────────────────────────────────────────
     def load_dataset(self):
+        default_dir = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "data", "datasets"))
+        if not os.path.isdir(default_dir):
+            default_dir = os.path.dirname(os.path.abspath(__file__))
         path = filedialog.askopenfilename(
             title="Seleziona il dataset CSV (baseline)",
+            initialdir=default_dir,
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not path: return
         try:
@@ -907,8 +914,14 @@ class App:
             log(self.console, f"Errore lettura sim file: {e}")
 
     def load_sim_file(self):
+        default_dir = os.path.normpath(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "data", "simulations"))
+        if not os.path.isdir(default_dir):
+            default_dir = os.path.dirname(os.path.abspath(__file__))
         path = filedialog.askopenfilename(
             title="Seleziona un file di simulazione CSV",
+            initialdir=default_dir,
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
         if not path: return
         # An externally loaded file is its own context; drop the in-session run

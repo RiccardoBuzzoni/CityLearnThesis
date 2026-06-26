@@ -10,17 +10,14 @@
 # CityLearn renders
 **/render/*
 
-# Images
-**/imgs/*
-
 # KPI logs
 **/kpi_logs/*
 
 # Linear regression result plots
-**/linear_regressor_results/*
+**/linear_regressor/*
 
 # LIME result plots
-**/lime_analysis_results/*
+**/lime_analysis/*
 
 # Evaluation plots
 **/evaluation_plots/*

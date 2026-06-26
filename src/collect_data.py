@@ -10,14 +10,14 @@ Usage
 The script presents a terminal menu to choose which controller to simulate:
 
   1. RBC   → always available; collects an AdvancedRBC episode and writes
-             datasets/advanced_rbc_dataset.csv
+             data/datasets/advanced_rbc_dataset.csv
              (also the training data required by linear_regressor.py)
 
   2. Linear Regressor → available only if the model artefacts are present in
-             ../linear_regressor_results/  (feature_mean.npy, feature_std.npy,
+             ../results/linear_regressor/  (feature_mean.npy, feature_std.npy,
              and one model_<target>.pth per target). Collects a *clean*
              (unperturbed) LinearRegressor episode and writes
-             datasets/linear_regressor_dataset.csv
+             data/datasets/linear_regressor_dataset.csv
              This CSV is the correct baseline for the GUI when using the
              neural policy — run it after training.
 
@@ -45,8 +45,9 @@ from main_rbc import AdvancedRBC
 # ─────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR   = Path(__file__).parent
-MODEL_DIR    = SCRIPT_DIR.parent / "linear_regressor_results"
-DATASET_DIR  = SCRIPT_DIR / "datasets"
+PROJECT_ROOT = SCRIPT_DIR.parent
+MODEL_DIR    = PROJECT_ROOT / "results" / "linear_regressor"
+DATASET_DIR  = PROJECT_ROOT / "data" / "datasets"
 
 RBC_OUTPUT_PATH = DATASET_DIR / "advanced_rbc_dataset.csv"
 LR_OUTPUT_PATH  = DATASET_DIR / "linear_regressor_dataset.csv"
@@ -356,7 +357,7 @@ def _model_status_line() -> str:
     """One-liner shown in the menu to inform the user about model availability."""
     ok, _ = _check_model_artefacts()
     if ok:
-        return "✓  model artefacts found in linear_regressor_results/"
+        return "✓  model artefacts found in results/linear_regressor/"
     else:
         return "✗  model artefacts NOT found  (train first with linear_regressor.py)"
 
@@ -378,11 +379,11 @@ def terminal_menu() -> str:
     print(f"  Model status: {lr_status}")
     print(separator)
     print("  [1]  Collect RBC dataset")
-    print("         → datasets/advanced_rbc_dataset.csv")
+    print("         → data/datasets/advanced_rbc_dataset.csv")
     print("         (baseline for RBC policy; training data for the regressor)")
     print()
     print("  [2]  Collect LinearRegressor dataset (clean/unperturbed)")
-    print("         → datasets/linear_regressor_dataset.csv")
+    print("         → data/datasets/linear_regressor_dataset.csv")
     print("         (baseline for the neural policy in the GUI)")
     print()
     print("  [3]  Collect BOTH datasets (RBC, then LinearRegressor)")

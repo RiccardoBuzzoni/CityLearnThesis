@@ -399,15 +399,15 @@ def main():
     # ── Plotting — overlaid curves ────────────────────────────────────
     plot_cooling_device(
         results_rbc, results_reg,
-        save_path='../evaluation_plots/cooling_device.png'
+        save_path='../results/evaluation_plots/cooling_device.png'
     )
     plot_dhw_storage(
         results_rbc, results_reg,
-        save_path='../evaluation_plots/dhw_storage.png'
+        save_path='../results/evaluation_plots/dhw_storage.png'
     )
     plot_electrical_storage(
         results_rbc, results_reg,
-        save_path='../evaluation_plots/electrical_storage.png'
+        save_path='../results/evaluation_plots/electrical_storage.png'
     )
 
 if __name__ == '__main__':

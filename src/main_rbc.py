@@ -345,7 +345,7 @@ def run_simulation(agent, env):
     # KPI logging: weekly and daily -> To implement in UserRBC
     weekly_interval_steps = 7 * 24  # 168 steps
     daily_interval_steps = 1 * 24   # 24 steps
-    kpi_dir = 'kpi_logs'
+    kpi_dir = '../results/rbc_kpi/kpi_logs'
     # Log files for weekly and daily KPIs are saved as .txt files
     # Change from .csv to .txt for better readability has been taken into consideration for UserRBC
     weekly_kpi_file = os.path.join(kpi_dir, f'{agent.__class__.__name__}_weekly_kpis_log.txt')
@@ -419,7 +419,7 @@ def main(args):
     # Compare results
     plot_district_kpis(
         {'AdvancedRBC': env_1, 'OptimizedRBC': env_2},
-        base_path='../imgs'
+        base_path='../results/rbc_kpi'
     )
 
 if __name__ == '__main__':

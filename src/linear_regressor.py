@@ -10,8 +10,8 @@ import os
 # 1. CONFIGURATION
 # ──────────────────────────────────────────────
 
-DATA_PATH  = "datasets/advanced_rbc_dataset.csv"
-OUTPUT_DIR = "../linear_regressor_results"
+DATA_PATH  = "../data/datasets/advanced_rbc_dataset.csv"
+OUTPUT_DIR = "../results/linear_regressor"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # All feature columns (observations) present in the dataset
