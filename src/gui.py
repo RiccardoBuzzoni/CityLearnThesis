@@ -304,7 +304,7 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.root.title("RBC vs Neural Policy")
+        self.root.title("Policy Sandbox")
         self.root.minsize(1280, 720)
         self._configure_window_geometry()
         self.root.configure(bg=BG_APP)
