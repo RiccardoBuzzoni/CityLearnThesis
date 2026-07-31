@@ -1,7 +1,7 @@
 # CityLearn utils
-from citylearn.data import DataSet
-from citylearn.wrappers import StableBaselines3Wrapper
-from citylearn.citylearn import CityLearnEnv
+from CityLearn.citylearn.data import DataSet
+from CityLearn.citylearn.wrappers import StableBaselines3Wrapper
+from CityLearn.citylearn.citylearn import CityLearnEnv
 
 # Logging
 import wandb
@@ -10,7 +10,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 # Utils
 import argparse
 from collections import deque
-from typing import Any, List, Tuple, Dict
+from typing import Any, List, Tuple, Dict, Optional
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -48,7 +48,7 @@ class CityLearnKPIWrapper(StableBaselines3Wrapper):
     def __init__(self, env):
         super().__init__(env)
 
-    def step(self, action):
+    def step(self, action): # type: ignore[override]
         obs, reward, terminated, truncated, info = self.env.step(action)
 
         if terminated:
@@ -129,7 +129,7 @@ class CityLearnWandbCallback(BaseCallback):
         return True
     
 
-def _select_items(schema: Dict[str, Any], key: str, available_items: List[str]=None) -> Tuple[dict, List[str]]:
+def _select_items(schema: Dict[str, Any], key: str, available_items: Optional[List[str]]=None) -> Tuple[dict, List[str]]:
     assert key in ['buildings', 'observations', 'actions'], f'Unknown schema key {key}.'
     
     # Init
@@ -141,7 +141,7 @@ def _select_items(schema: Dict[str, Any], key: str, available_items: List[str]=N
         print(f"- {idx+1}. {item}")
 
     # Item selection
-    user_input = input(f"\nSelect {item} by entering their numbers separated by commas (e.g., 1,3,5): ")
+    user_input = input(f"\nSelect {key} by entering their numbers separated by commas (e.g., 1,3,5): ")
     selected_indices = [int(i.strip()) - 1 for i in user_input.split(',') if i.strip().isdigit() and 0 < int(i.strip()) <= len(pool)]
     selected_items = [pool[i] for i in selected_indices]
 
@@ -182,7 +182,7 @@ def select_env_config(dataset: str) -> Dict[str, Any]:
     return schema
 
 
-def default_env_config(dataset: int) -> Dict[str, Any]:
+def default_env_config(dataset: str) -> Dict[str, Any]:
     # Get schema from CityLearn dataset
     schema = DataSet().get_schema(dataset)
 
@@ -210,7 +210,8 @@ def get_kpis(env: CityLearnEnv) -> pd.DataFrame:
         KPI table.
     """
 
-    kpis = env.unwrapped.evaluate()
+    unwrapped_env: CityLearnEnv = env.unwrapped  # type: ignore[assignment]
+    kpis = unwrapped_env.evaluate()
 
     # names of KPIs to retrieve from evaluate function
     kpi_names = {
@@ -279,13 +280,13 @@ def plot_district_kpis(envs: dict[str, CityLearnEnv], base_path: str) -> None:
     for i, (ax, (k, k_data)) in enumerate(zip(fig.axes, kpis.groupby('kpi'))):
         sns.barplot(x='value', y='name', data=k_data, hue='env_id', ax=ax)
 
-        ax.set_xlabel(None)
-        ax.set_ylabel(None)
+        ax.set_xlabel("")
+        ax.set_ylabel("")
         ax.set_yticklabels([])  # Remove y-axis tick labels
         ax.set_title(k)
 
         for j in range(len(ax.containers)):
-            ax.bar_label(ax.containers[j], fmt='%.2f')
+            ax.bar_label(ax.containers[j], fmt='%.2f') # type: ignore[arg-type]
 
         # Add dashed vertical line at x=1
         ax.axvline(x=1, color='gray', linestyle='--', linewidth=1.5, label='No Control')
