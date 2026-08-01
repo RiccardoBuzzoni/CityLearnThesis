@@ -61,14 +61,18 @@ warnings.filterwarnings("ignore", category=UserWarning)
 import torch
 from datetime import datetime
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(_project_root)
+sys.path.append(os.path.join(_project_root, 'omnisafe'))
+
+import types as _types
 
 # Importing citylearn_cmdp triggers the @env_register decorator, which
 # registers 'CityLearn-v0' in Omnisafe's environment registry.
 # This import MUST occur before omnisafe.Agent() is called.
 import citylearn_cmdp  # noqa: F401  (side-effect import)
 
-import omnisafe.omnisafe as omnisafe
+import omnisafe
 
 from config import TrainConfig
 from utils import default_env_config, select_env_config
@@ -245,12 +249,9 @@ def main_omnisafe(
         },
 
         'logger_cfgs': {
+            # Only keys present in Omnisafe's default PPOLag.yaml are allowed.
             'use_wandb': args.wandb,
             'wandb_project': args.project,
-            'entity': args.entity,
-            # Tag identifies both the reward variant and the seed in the W&B UI
-            'tag': f'{args.algo}_{reward_tag}_seed{args.seed}',
-            'mode': 'online',
         },
 
         # env_cfgs are forwarded verbatim to CityLearnCMDP.__init__() as
@@ -274,7 +275,7 @@ def main_omnisafe(
     # 'CityLearn-v0' was registered by the `import citylearn_cmdp` at the top
     # of this file.  Omnisafe resolves the string to CityLearnCMDP via its
     # internal ENV_REGISTRY.
-    agent = omnisafe.Agent(args.algo, 'CityLearn-v0', custom_cfgs=custom_cfgs)
+    agent = omnisafe.Agent(args.algo, 'CityLearn-v0', custom_cfgs=custom_cfgs) # type: ignore[attr-defined]
     agent.learn()
 
      # ── Save actor network ────────────────────────────────────────────────────

@@ -14,18 +14,22 @@ conda env create --file conda-recipe.yaml
 conda activate omnisafe
 pip install -e .
 
-# Update `torch` and `torchvision`
-pip install torch==2.8.0
-pip install torchvision==0.23.0
+# Update torch and torchvision — must use the PyTorch CUDA wheel index
+# to get builds that are ABI-compatible with each other.
+# Adjust the --index-url suffix (cu128, cu121, cpu, ...) to match your CUDA version.
+# Check your CUDA version with: nvidia-smi
+pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
 ``` 
 
 > **Note:** double-check the installed `torch`/`torchvision` pairing after this step
-> (`conda list` should show matching CUDA-compatible builds for both). Mismatched
-> versions between the two can silently break GPU support or `torchvision` transforms.
-
-> **Note:** double-check the installed `torch`/`torchvision` pairing after this step
-> (`conda list` should show matching CUDA-compatible builds for both). Mismatched
-> versions between the two can silently break GPU support or `torchvision` transforms.
+> (`conda list` should show matching CUDA-compatible builds for both).
+> Verify the installation with:
+> ```console
+> python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__)"
+> ```
+> Expected output: `2.8.0+cu128 0.23.0+cu128`.
+> Mismatched versions cause `RuntimeError: operator torchvision::nms does not exist`
+> at import time and can silently break GPU support or `torchvision` transforms.
 
 3. Setup `citylearn`:
 ```console
@@ -43,7 +47,6 @@ pip install ipywidgets
 pip install stable-baselines3==2.0.0
 
 # LIME — Local Interpretable Model-agnostic Explanations
-pip install lime==0.2.0.1 --no-deps
 pip install lime==0.2.0.1 --no-deps
 
 # GUI dependencies (tkinter is included in standard Python installations)

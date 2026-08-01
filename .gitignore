@@ -36,3 +36,25 @@
 
 # Distribution files
 **/*.egg-info/*
+
+# RL training experiments (actor weights, schemas, configs)
+**/experiments/*
+
+# Reward comparison outputs
+**/reward_comparison/*
+
+# TorchScript actor networks (grandi, non vanno in repo)
+**/*.pt
+
+# Numpy stats files (linear regressor normalisation)
+**/*.npy
+
+# Model weights (linear regressor)
+**/*.pth
+
+# YAML config snapshots generati dal training
+**/train_config.yaml
+
+# Python environment
+**/.env
+**/*.pyc
