@@ -74,31 +74,33 @@ python collect_data.py
 Presents an interactive menu:
 - **Option 1 — RBC dataset**: runs a full AdvancedRBC simulation and saves the result to `data/datasets/advanced_rbc_dataset.csv`. Always available; required before training.
 - **Option 2 — LinearRegressor dataset**: runs a clean (unperturbed) LinearRegressor simulation and saves the result to `data/datasets/linear_regressor_dataset.csv`. Only available after the model has been trained (Step 2). This CSV is used as the baseline in the GUI when running the neural policy.
-- **Option 3 — Both**: runs Option 1 and Option 2 back to back. If the trained model artefacts required for Option 2 aren't available yet, this falls back gracefully to collecting only the RBC dataset instead of failing outright.
-- **Option 1 — RBC dataset**: runs a full AdvancedRBC simulation and saves the result to `data/datasets/advanced_rbc_dataset.csv`. Always available; required before training.
-- **Option 2 — LinearRegressor dataset**: runs a clean (unperturbed) LinearRegressor simulation and saves the result to `data/datasets/linear_regressor_dataset.csv`. Only available after the model has been trained (Step 2). This CSV is used as the baseline in the GUI when running the neural policy.
-- **Option 3 — Both**: runs Option 1 and Option 2 back to back. If the trained model artefacts required for Option 2 aren't available yet, this falls back gracefully to collecting only the RBC dataset instead of failing outright.
+- **Option 3 — RL dataset**: runs a clean (unperturbed) simulation using the trained RL actor model `(results/rl_model/actor.pt)` and saves the result to `data/datasets/rl_dataset.csv`. Requires a trained RL agent. Used as the baseline in the GUI when evaluating the RL policy.
+- **Option 4 - All available**: runs all available dataset collection steps back to back (RBC, LinearRegressor, and RL). If trained model artefacts for the neural or RL policies aren't available yet, it falls back gracefully to collecting only the available ones without crashing.
 
 **Step 2 — Linear regressor training**
 ```console
 python linear_regressor.py
 ```
 Trains three linear regressors (one per action) and saves the training plots and model weights to `results/linear_regressor/`.
-Trains three linear regressors (one per action) and saves the training plots and model weights to `results/linear_regressor/`.
+
  
 **Step 3 — LIME analysis**
 ```console
 python lime_analysis.py
 ```
 Runs the explainability analysis and saves the feature importance plots to `results/lime_analysis/`.
-Runs the explainability analysis and saves the feature importance plots to `results/lime_analysis/`.
+
+**Step 4 - RL Agent training**
+```console
+python train.py --episodes <N>
+```
+Trains the Omnisafe constrained RL agent (PPOLag) on CityLearn for N episodes and saves the TorchScript actor model to `results/rl_model/actor.pt`.
  
-**Step 4 — Evaluation and comparison**
+**Step 5 — Evaluation and comparison**
 ```console
 python evaluate.py
 ```
-Runs both the AdvancedRBC and the linear regressor simulations and saves the comparison plots to `results/evaluation_plots/`.
-Runs both the AdvancedRBC and the linear regressor simulations and saves the comparison plots to `results/evaluation_plots/`.
+Runs simulations for all available controllers (AdvancedRBC, Linear Regressor, and RL Agent) and saves the metric comparison plots and time-series figures to `results/evaluation_plots/`.
 
 ---
 
@@ -110,10 +112,12 @@ python gui.py
 
 Launches an interactive Tkinter GUI for running and comparing simulations in real time.
 
+![Gui](material/gui_screenshot.png)
+
 **Features:**
 
-- **Controller selection**: switch between RBC (AdvancedRBC) and Neural policy (LinearRegressor) at any time.
-- **Dataset baseline**: load a pre-collected CSV (`advanced_rbc_dataset.csv` for RBC, `linear_regressor_dataset.csv` for the neural policy) to use as a clean baseline for comparison.
+- **Controller selection**: switch between RBC (AdvancedRBC), Neural policy (LinearRegressor), and RL policy (Omnisafe actor) at any time.
+- **Dataset baseline**: load a pre-collected CSV (`advanced_rbc_dataset.csv` for RBC, `linear_regressor_dataset.csv` for the neural policy, and `rl_dataset.csv` for the RL policy) to use as a clean baseline for comparison.
 - **Perturbations**: add, stack, and remove perturbations on any of the three device actions (`cooling_device`, `dhw_storage`, `electrical_storage`) before or during a simulation.
 - **Step / Start / Stop / Reset**: run the simulation step-by-step or continuously; stop and resume at any point.
 - **Live plot**: toggle live plotting to see the baseline vs. perturbed curves update in real time as the simulation progresses. Legends are kept compact, showing only the run label (`run N`) per curve.
@@ -121,7 +125,7 @@ Launches an interactive Tkinter GUI for running and comparing simulations in rea
 - **Auto-load**: on startup the GUI automatically searches for trained model weights in `results/linear_regressor/` and loads them if found.
 - **Live plot**: toggle live plotting to see the baseline vs. perturbed curves update in real time as the simulation progresses. Legends are kept compact, showing only the run label (`run N`) per curve.
 - **Session export**: each simulation session is automatically saved to `data/simulations/sim_<policy>_<timestamp>.csv` for later analysis.
-- **Auto-load**: on startup the GUI automatically searches for trained model weights in `results/linear_regressor/` and loads them if found.
+- **Auto-load**: on startup the GUI automatically searches for trained model weights in `results/linear_regressor/` and `results/rl_model/actor.pt`, loading them automatically if found.
 
 **Typical workflow:**
 
@@ -129,33 +133,6 @@ Launches an interactive Tkinter GUI for running and comparing simulations in rea
 2. Launch `gui.py`, select the desired controller, and load the matching dataset.
 3. Add perturbations if needed, then start the simulation.
 4. Use the plot panel to compare the baseline and perturbed curves across all observations and actions.
-
----
-
-### Diagnostics
-
-```console
-python demonstrate_fix.py
-```
-
-Standalone script — not part of the pipeline above — that illustrates a timing/indexing
-issue in how CityLearn building objects expose per-timestep state versus what
-`env.step()` returns in the observation array.
-
-**The issue:** after calling `env.step(actions)`, the SOC value contained in the
-returned `next_obs` is read from `building.electrical_storage.soc[time_step]`, i.e.
-the array slot for the **new** internal time step CityLearn has just advanced to —
-not the slot that actually holds the result of the action you just executed. That
-result instead sits at `soc[time_step - 1]`. Reading `next_obs` naively for "what did
-my last action do to the battery" therefore reads the wrong timestep.
-
-**The fix:** when you need the realized outcome of an action rather than the raw
-observation, either capture the relevant value from the building object *before*
-calling `step()`, or index `soc[building.time_step - 1]` immediately *after* calling
-it — don't trust the corresponding entry in `next_obs` at face value. This is the
-same correction later applied to `indoor_dry_bulb_temperature` and `dhw_storage_soc`
-inside `gui.py`, so this script is a useful reference any time a new per-building
-variable needs to be read correctly post-step.
 
 ---
 
@@ -207,9 +184,10 @@ Interactive script that presents a terminal menu for collecting simulation datas
 - **Both**: convenience option that chains the two collections above. If the LinearRegressor artefacts are missing, it skips that half via an `exit_on_missing` fallback rather than aborting the whole run.
 - **RBC dataset** (`data/datasets/advanced_rbc_dataset.csv`): always available; runs a full AdvancedRBC episode and records the 13 observations and 3 actions at each timestep. Used as training data for the linear regressor and as the baseline in the GUI when running the RBC policy.
 - **LinearRegressor dataset** (`data/datasets/linear_regressor_dataset.csv`): available only after training. Runs a clean (unperturbed) LinearRegressor episode with the same structure. Used as the baseline in the GUI when running the neural policy.
-- **Both**: convenience option that chains the two collections above. If the LinearRegressor artefacts are missing, it skips that half via an `exit_on_missing` fallback rather than aborting the whole run.
+- **RL dataset** (`data/datasets/rl_dataset.csv`): available only after training the RL agent. Runs a clean (unperturbed) simulation using the trained actor model (results/rl_model/actor.pt) and records the same structure. Used as the baseline in the GUI when running the RL policy.
+- **All available**: convenience option that runs all available dataset collection steps back to back. If the LinearRegressor or RL model artefacts are missing, it skips those steps via a fallback rather than aborting the whole run.
 
-The script checks for the presence of model artefacts before attempting to collect the regressor dataset, and exits with a clear error and remediation steps if they are missing. The simulation covers one month (719 hourly timesteps).
+The script checks for the presence of model artefacts before attempting to collect the corresponding regressor or RL datasets, and skips or exits gracefully with clear guidance if they are missing. The simulation covers one month (719 hourly timesteps).
  
 ---
  
@@ -225,8 +203,12 @@ Feature subsets per target:
  
 ### `lime_analysis.py` — LIME Analysis
 Applies LIME (Local Interpretable Model-agnostic Explanations) to the three trained linear regressors to explain AdvancedRBC's decisions. For each target, it selects 5 representative timesteps from the evaluation set (maximum action, minimum action, mean action, worst prediction and best prediction) and computes LIME weights on each of them. It produces a **mean feature importance** plot for each of the three actions, saved to `results/lime_analysis/`. The explainer is built on the training set filtered to domain features only, ensuring that LIME's perturbations stay consistent with the model's input distribution.
-Applies LIME (Local Interpretable Model-agnostic Explanations) to the three trained linear regressors to explain AdvancedRBC's decisions. For each target, it selects 5 representative timesteps from the evaluation set (maximum action, minimum action, mean action, worst prediction and best prediction) and computes LIME weights on each of them. It produces a **mean feature importance** plot for each of the three actions, saved to `results/lime_analysis/`. The explainer is built on the training set filtered to domain features only, ensuring that LIME's perturbations stay consistent with the model's input distribution.
  
+---
+
+### `train.py` — RL Agent Training
+Trains the Omnisafe constrained RL agent (PPOLag) on CityLearn for N episodes using a custom multi-objective reward configuration (with discomfort weight zeroed out, as discomfort is handled by the CMDP cost channel). The trained TorchScript actor model is saved (and overwritten) directly to `results/rl_model/actor.pt`, while the schemas and configuration YAML are persisted for reproducibility.
+
 ---
  
 ### `evaluate.py` — Evaluation & Comparison
@@ -236,7 +218,6 @@ Sequentially runs the AdvancedRBC and LinearRegressorAgent simulations (an agent
 - **`dhw_storage.png`**: `dhw_storage` action value and DHW storage SOC for both agents
 - **`electrical_storage.png`**: `electrical_storage` action value and battery SOC for both agents
  
-RBC curves are shown as solid lines, regressor curves as dashed lines. Plots are saved to `results/evaluation_plots/`.
 RBC curves are shown as solid lines, regressor curves as dashed lines. Plots are saved to `results/evaluation_plots/`.
 
 ---

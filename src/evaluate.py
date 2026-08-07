@@ -1,6 +1,23 @@
-# Imports
+"""
+evaluate.py
+-----------
+Evaluation and comparative plotting script for the CityLearn thesis project.
+
+This script runs full-episode simulations on a specified CityLearn environment
+for up to three different agent types:
+  1. AdvancedRBC        — Rule-Based Control baseline
+  2. LinearRegressor    — Neural linear regressor surrogate policy
+  3. OmnisafeActorAgent — Constrained Reinforcement Learning policy (PPOLag)
+
+After running the evaluation loops, it generates comparative plots overlaying
+the indoor temperature, DHW storage state of charge (SoC), and Electrical
+storage SoC for all evaluated controllers.
+"""
+
 import json
-import os, sys
+import os
+import sys
+from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -23,6 +40,9 @@ from linear_regressor import (
     OUTPUT_DIR,
     main as train_linear_models,
 )
+
+# Import of Omnisafe RL Agent wrapper
+from rl_agent import OmnisafeActorAgent
 
 
 # ──────────────────────────────────────────────
@@ -61,11 +81,11 @@ class LinearRegressorAgent:
         mean: np.ndarray,
         std: np.ndarray,
     ):
-        self.env             = env
-        self.trained_models  = trained_models
+        self.env              = env
+        self.trained_models   = trained_models
         self.trained_features = trained_features
-        self.mean            = mean
-        self.std             = std
+        self.mean             = mean
+        self.std              = std
 
         # Pre-compute column indices for each target to avoid repeated lookups
         self._col_idx: dict[str, list[int]] = {
@@ -118,10 +138,7 @@ class LinearRegressorAgent:
 
                 action[act_names.index(target)] = pred
 
-            # Clip actions to their physical bounds:
-            # cooling_device ∈ [0, 1]  — cannot be negative (no reverse cooling)
-            # dhw_storage    ∈ [-1, 1]
-            # electrical_storage ∈ [-1, 1]
+            # Clip actions to physical bounds
             CLIP_BOUNDS: dict[str, tuple[float, float]] = {
                 "cooling_device":      (0.0,  1.0),
                 "dhw_storage":         (-1.0, 1.0),
@@ -137,17 +154,18 @@ class LinearRegressorAgent:
         return actions
 
 
-def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
-    '''
-    Plot the cooling_device action value, indoor temperature, setpoint and comfort band
-    for both AdvancedRBC and the linear regressor (if provided).
+# ──────────────────────────────────────────────
+# PLOTTING FUNCTIONS
+# ──────────────────────────────────────────────
 
-    Left axis  : temperature (°C) and comfort band
-    Right axis : cooling_device action value [0, 1]
+def plot_cooling_device(res_rbc, res_reg=None, res_rl=None, save_path='cooling_device.png'):
+    '''
+    Plot indoor temperature, setpoint, and comfort band for RBC, Regressor, and RL agents.
 
     Args:
-        res_rbc: Dictionary containing the results from the RBC agent.
-        res_reg: Optional dictionary containing the results from the LinearRegressorAgent.
+        res_rbc: Results dictionary from AdvancedRBC.
+        res_reg: Optional results dictionary from LinearRegressorAgent.
+        res_rl:  Optional results dictionary from OmnisafeActorAgent (RL).
         save_path: Path where the plot will be saved.
     '''
     time_steps   = range(res_rbc['env_h']['time_steps'])
@@ -161,9 +179,9 @@ def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
 
     # Comfort band shading
     ax1.fill_between(time_steps, set_point + comfort_band, set_point - comfort_band,
-                     color='green', alpha=0.2, label='Comfort band')
+                     color='green', alpha=0.15, label='Comfort band')
 
-    # Temperature curves
+    # RBC Temperature curve
     ax1.plot(time_steps, indoor_temp,
              label='Indoor Temp (RBC)', linewidth=1.5, color='tab:blue')
     ax1.plot(time_steps, set_point,
@@ -175,10 +193,15 @@ def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
 
     if res_reg is not None:
         indoor_temp_reg = np.array(res_reg['env_h']['temperature']['indoor_dry_bulb_temperature'])
-
         ax1.plot(time_steps, indoor_temp_reg,
                  label='Indoor Temp (Regressor)', linewidth=1.5,
-                 color='tab:orange', linestyle='--', alpha=0.7) # Different colour for better visualisaton
+                 color='tab:orange', linestyle='--', alpha=0.7)
+
+    if res_rl is not None:
+        indoor_temp_rl = np.array(res_rl['env_h']['temperature']['indoor_dry_bulb_temperature'])
+        ax1.plot(time_steps, indoor_temp_rl,
+                 label='Indoor Temp (RL)', linewidth=1.5,
+                 color='tab:purple', linestyle='-.', alpha=0.8)
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(lines1, labels1, loc='upper right')
@@ -189,16 +212,14 @@ def plot_cooling_device(res_rbc, res_reg=None, save_path='cooling_device.png'):
     print(f"Plot saved in: {save_path}")
 
 
-def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
+def plot_dhw_storage(res_rbc, res_reg=None, res_rl=None, save_path='dhw_storage.png'):
     '''
-    Plot the dhw_storage action value and DHW storage SoC for both agents.
-
-    Left axis  : dhw_storage SoC [0, 1]
-    Right axis : dhw_storage action value [-1, 1]
+    Plot DHW storage SoC for RBC, Regressor, and RL agents.
 
     Args:
-        res_rbc: Dictionary containing the results from the RBC agent.
-        res_reg: Optional dictionary containing the results from the LinearRegressorAgent.
+        res_rbc: Results dictionary from AdvancedRBC.
+        res_reg: Optional results dictionary from LinearRegressorAgent.
+        res_rl:  Optional results dictionary from OmnisafeActorAgent (RL).
         save_path: Path where the plot will be saved.
     '''
     time_steps  = range(res_rbc['env_h']['time_steps'])
@@ -213,14 +234,17 @@ def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
     ax1.set_xlabel('Time Step (Hours)')
     ax1.grid(True, alpha=0.3)
 
-    ax2 = ax1.twinx()
-
     if res_reg is not None:
-        soc_reg    = np.array(res_reg['env_h']['dhw']['dhw_storage_soc'])
-
+        soc_reg = np.array(res_reg['env_h']['dhw']['dhw_storage_soc'])
         ax1.plot(time_steps, soc_reg,
                  label='DHW SoC (Regressor)', linewidth=1.5,
-                 color='tab:red', linestyle='--', alpha=0.7) # Different colour for better visualisaton
+                 color='tab:red', linestyle='--', alpha=0.7)
+
+    if res_rl is not None:
+        soc_rl = np.array(res_rl['env_h']['dhw']['dhw_storage_soc'])
+        ax1.plot(time_steps, soc_rl,
+                 label='DHW SoC (RL)', linewidth=1.5,
+                 color='tab:purple', linestyle='-.', alpha=0.8)
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(lines1, labels1, loc='upper right')
@@ -231,23 +255,21 @@ def plot_dhw_storage(res_rbc, res_reg=None, save_path='dhw_storage.png'):
     print(f"Plot saved in: {save_path}")
 
 
-def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage.png'):
+def plot_electrical_storage(res_rbc, res_reg=None, res_rl=None, save_path='electrical_storage.png'):
     '''
-    Plot the electrical_storage action value and electrical storage SoC for both agents.
-
-    Left axis  : electrical_storage SoC [0, 1]
-    Right axis : electrical_storage action value [-1, 1]
+    Plot electrical storage SoC for RBC, Regressor, and RL agents.
 
     Args:
-        res_rbc: Dictionary containing the results from the RBC agent.
-        res_reg: Optional dictionary containing the results from the LinearRegressorAgent.
+        res_rbc: Results dictionary from AdvancedRBC.
+        res_reg: Optional results dictionary from LinearRegressorAgent.
+        res_rl:  Optional results dictionary from OmnisafeActorAgent (RL).
         save_path: Path where the plot will be saved.
     '''
     time_steps  = range(res_rbc['env_h']['time_steps'])
     soc_rbc     = np.array(res_rbc['env_h']['electrical_storage_soc'])
 
     fig, ax1 = plt.subplots(figsize=(20, 6))
-    ax1.set_title('Electrical Storage — Action Value and State of Charge')
+    ax1.set_title('Electrical Storage — State of Charge')
 
     ax1.plot(time_steps, soc_rbc,
              label='Electrical SoC (RBC)', linewidth=1.5, color='tab:orange')
@@ -256,11 +278,16 @@ def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage
     ax1.grid(True, alpha=0.3)
 
     if res_reg is not None:
-        soc_reg    = np.array(res_reg['env_h']['electrical_storage_soc'])
-
+        soc_reg = np.array(res_reg['env_h']['electrical_storage_soc'])
         ax1.plot(time_steps, soc_reg,
                  label='Electrical SoC (Regressor)', linewidth=1.5,
-                 color='tab:blue', linestyle='--', alpha=0.7) # Different colour for better visualisaton
+                 color='tab:blue', linestyle='--', alpha=0.7)
+
+    if res_rl is not None:
+        soc_rl = np.array(res_rl['env_h']['electrical_storage_soc'])
+        ax1.plot(time_steps, soc_rl,
+                 label='Electrical SoC (RL)', linewidth=1.5,
+                 color='tab:purple', linestyle='-.', alpha=0.8)
 
     lines1, labels1 = ax1.get_legend_handles_labels()
     ax1.legend(lines1, labels1, loc='upper right')
@@ -271,12 +298,14 @@ def plot_electrical_storage(res_rbc, res_reg=None, save_path='electrical_storage
     print(f"Plot saved in: {save_path}")
 
 
+# ──────────────────────────────────────────────
+# EVALUATION LOOP
+# ──────────────────────────────────────────────
 
 def evaluate_agent(agent_class, env):
     """
     Simulates episode and records results for the given agent in the provided environment.
-    Accepts either an agent class (instantiated with just env) or an already-instantiated
-    agent object (used for LinearRegressorAgent which needs extra constructor arguments).
+    Accepts either an agent class (instantiated with env) or an already-instantiated agent object.
     """
     if isinstance(agent_class, type):
         agent = agent_class(env)
@@ -336,8 +365,29 @@ def evaluate_agent(agent_class, env):
     return results
 
 
+def _find_rl_model() -> str | None:
+    """Find the path to the RL actor model file."""
+    root_dir = Path(__file__).parent.parent
+    
+    # 1. Primary path: results/rl_model/actor.pt
+    primary_actor = root_dir / "results" / "rl_model" / "actor.pt"
+    if primary_actor.exists():
+        return str(primary_actor)
+
+    # 2. Fallback: search in results/experiments/
+    exp_dir = root_dir / "results" / "experiments"
+    if exp_dir.exists():
+        candidates = list(exp_dir.glob("**/actor.pt")) + \
+                     list(exp_dir.glob("**/actor_net_custom.pt")) + \
+                     list(exp_dir.glob("**/actor_net_standard.pt"))
+        if candidates:
+            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(candidates[0])
+
+    return None
+
+
 def main():
-    # Same configuration as main_rbc.py for consistency
     conf = Config()
     args = conf.args
     
@@ -352,61 +402,73 @@ def main():
 
     print(f"Start evaluation with dataset: {args.data}")
 
-    print("Loading normalization statistics...")
+    # ── 1. RBC evaluation ─────────────────────────────────────────────
+    env_rbc = CityLearnEnv(schema=schema, central_agent=True)
+    print("\nRunning AdvancedRBC...")
+    results_rbc = evaluate_agent(AdvancedRBC, env_rbc)
+
+    # ── 2. Linear Regressor evaluation ────────────────────────────────
+    results_reg = None
+    print("\nLoading Linear Regressor artefacts...")
     try:
         mean = np.load(os.path.join(OUTPUT_DIR, "feature_mean.npy"))
         std  = np.load(os.path.join(OUTPUT_DIR, "feature_std.npy"))
-    except FileNotFoundError:
-        print(f"Error: Statistics files not found in {OUTPUT_DIR}. Run linear_regressor.py first.")
-        return
-    
-    trained_models = {}
-    trained_features = DOMAIN_FEATURES
 
-    print("Loading trained linear regressor models...")
-    for target in TARGET_COLS:
-        domain_feats = DOMAIN_FEATURES[target]
-        is_storage = target in ["dhw_storage", "electrical_storage"]
-        
-        model = LinearRegressor(input_dim=len(domain_feats), is_storage=is_storage)
-        
-        model_path = os.path.join(OUTPUT_DIR, f"model_{target}.pth")
-        if not os.path.exists(model_path):
-            print(f"  Error: Model file {model_path} not found.")
-            return
+        trained_models = {}
+        for target in TARGET_COLS:
+            domain_feats = DOMAIN_FEATURES[target]
+            is_storage = target in ["dhw_storage", "electrical_storage"]
             
-        model.load_state_dict(torch.load(model_path))
-        model.eval()
-        trained_models[target] = model
+            model = LinearRegressor(input_dim=len(domain_feats), is_storage=is_storage)
+            model_path = os.path.join(OUTPUT_DIR, f"model_{target}.pth")
+            
+            if os.path.exists(model_path):
+                model.load_state_dict(torch.load(model_path))
+                model.eval()
+                trained_models[target] = model
+            else:
+                raise FileNotFoundError(f"Model file {model_path} not found.")
 
-    # ── RBC evaluation ────────────────────────────────────────────────
-    env_rbc = CityLearnEnv(schema=schema, central_agent=True)
-    print("Running AdvancedRBC...")
-    results_rbc = evaluate_agent(AdvancedRBC, env_rbc)
+        env_reg = CityLearnEnv(schema=schema, central_agent=True)
+        reg_agent = LinearRegressorAgent(
+            env                 = env_reg,
+            trained_models      = trained_models,
+            trained_features    = DOMAIN_FEATURES,
+            mean                = mean,
+            std                 = std,
+        )
+        print("Running LinearRegressorAgent...")
+        results_reg = evaluate_agent(reg_agent, env_reg)
+    except Exception as exc:
+        print(f"  [SKIP] Could not run LinearRegressorAgent: {exc}")
 
-    # ── Linear Regressor evaluation ───────────────────────────────────
-    env_reg = CityLearnEnv(schema=schema, central_agent=True)
-    reg_agent = LinearRegressorAgent(
-        env                 = env_reg,
-        trained_models      = trained_models,
-        trained_features    = trained_features,
-        mean                = mean,
-        std                 = std,
-    )
-    print("Running LinearRegressorAgent...")
-    results_reg = evaluate_agent(reg_agent, env_reg)
+    # ── 3. RL Agent evaluation ────────────────────────────────────────
+    results_rl = None
+    rl_model_path = _find_rl_model()
+    if rl_model_path:
+        print(f"\nLoading RL model from: {rl_model_path}")
+        try:
+            env_rl = CityLearnEnv(schema=schema, central_agent=True)
+            rl_agent = OmnisafeActorAgent(fname=rl_model_path, env=env_rl)
+            print("Running OmnisafeActorAgent...")
+            results_rl = evaluate_agent(rl_agent, env_rl)
+        except Exception as exc:
+            print(f"  [SKIP] Could not run OmnisafeActorAgent: {exc}")
+    else:
+        print("\n  [SKIP] No RL actor model found under results/rl_model/ or results/experiments/.")
 
-    # ── Plotting — overlaid curves ────────────────────────────────────
+    # ── 4. Plotting — overlaid curves ─────────────────────────────────
+    print("\nGenerating evaluation plots...")
     plot_cooling_device(
-        results_rbc, results_reg,
+        results_rbc, results_reg, results_rl,
         save_path='../results/evaluation_plots/cooling_device.png'
     )
     plot_dhw_storage(
-        results_rbc, results_reg,
+        results_rbc, results_reg, results_rl,
         save_path='../results/evaluation_plots/dhw_storage.png'
     )
     plot_electrical_storage(
-        results_rbc, results_reg,
+        results_rbc, results_reg, results_rl,
         save_path='../results/evaluation_plots/electrical_storage.png'
     )
 

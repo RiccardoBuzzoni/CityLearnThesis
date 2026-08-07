@@ -277,6 +277,75 @@ class NeuralPolicy:
                 out[t] = clamp(t, self.models[t](x).item())
         return out
 
+# ── RL Policy ──────────────────────────────────────────────────────────────────
+class RLPolicy:
+    """
+    Wrapper for loading and executing a trained Reinforcement Learning (RL) policy.
+    Supports Omnisafe / PyTorch TorchScript policy actors.
+    """
+    def __init__(self):
+        self.ready: bool = False
+        self.actor = None
+
+    def load(self, model_path: str) -> tuple[bool, str]:
+        """
+        Loads the RL TorchScript actor model from disk.
+        """
+        if not os.path.exists(model_path):
+            return False, f"RL model file not found: {model_path}"
+        try:
+            import torch
+            # Carica il modello usando torch.jit.load per TorchScript
+            try:
+                self.actor = torch.jit.load(model_path, map_location="cpu")
+            except Exception:
+                self.actor = torch.load(model_path, map_location="cpu")
+
+            if hasattr(self.actor, "eval"):
+                self.actor.eval()
+            self.ready = True
+            return True, f"RL model loaded from: {os.path.basename(model_path)}"
+        except Exception as e:
+            return False, f"Loading error (RL): {e}"
+
+    def predict(self, obs_dict: dict) -> dict[str, float]:
+        """
+        Predicts actions using the loaded RL policy given the current observation dict.
+        """
+        if not self.ready or self.actor is None:
+            return {a: 0.0 for a in ACTION_NAMES}
+        
+        try:
+            import torch
+            # 1. Costruisce il vettore con esattamente le 13 osservazioni attese
+            obs_vector = [float(obs_dict.get(k, 0.0)) for k in OBS_NAMES]
+            x = torch.tensor(obs_vector, dtype=torch.float32).unsqueeze(0)
+            
+            with torch.no_grad():
+                # Valuta il modello TorchScript
+                output = self.actor(x)
+
+            # 2. Estrae la media (mean) dall'output [mean || log_std]
+            if isinstance(output, torch.Tensor):
+                if output.shape[-1] > len(ACTION_NAMES):
+                    mean, _ = output.chunk(2, dim=-1)
+                else:
+                    mean = output
+                # Applica tanh per portare l'azione nel range [-1, 1]
+                raw_actions = torch.tanh(mean).squeeze(0).cpu().numpy().tolist()
+            else:
+                raw_actions = [0.0] * len(ACTION_NAMES)
+
+            # 3. Mappa le azioni ai nomi dei device e applica il clamp ai limiti fisici
+            actions: dict[str, float] = {}
+            for i, name in enumerate(ACTION_NAMES):
+                val = float(raw_actions[i]) if i < len(raw_actions) else 0.0
+                actions[name] = clamp(name, val)
+
+            return actions
+        except Exception as e:
+            print(f"[RL Error] Predict failed: {e}")
+            return {a: 0.0 for a in ACTION_NAMES}
 
 # ── Redirector ────────────────────────────────────────────────────────────────
 class Redirector(io.StringIO):
@@ -320,7 +389,9 @@ class App:
         self.env    = None; self.rbc = None
         self.obs    = None; self.obs_dict = {}
         self.neural = NeuralPolicy()
-        self.neural_status = tk.Label(self.root)  # Placeholder
+        self.rl     = RLPolicy()
+        self.neural_status = tk.Label(self.root) 
+        self.rl_status     = tk.Label(self.root)
 
         self.policy_var = tk.StringVar(value="rbc")
         self.running    = False
@@ -454,17 +525,22 @@ class App:
         return list(ACTION_NAMES)
 
     def predict(self, obs_dict):
-        if self.policy_var.get() == "rbc":
+        policy_type = self.policy_var.get()
+
+        if policy_type == "rbc":
             if not self.rbc or self.obs is None:
                 return {a: 0.0 for a in ACTION_NAMES}
             vec  = [obs_dict.get(n, 0.0) for n in self.rbc.observation_names[0]]
             raw  = self.rbc.predict([vec])
             acts = raw[0] if raw else [0.0, 0.0, 0.0]
-            # The RBC returns actions in the ENV's action order, so label them
-            # by that order (not ACTION_NAMES) to avoid mislabelling devices.
             return {n: clamp(n, acts[i])
                     for i, n in enumerate(self._env_action_order())}
-        return self.neural.predict(obs_dict)
+        elif policy_type == "neural":
+            return self.neural.predict(obs_dict)
+        elif policy_type == "RL":
+            return self.rl.predict(obs_dict)
+
+        return {a: 0.0 for a in ACTION_NAMES}
 
     def compute(self):
         """
@@ -514,7 +590,14 @@ class App:
         if self._session_open:
             return
         ts     = datetime.now().strftime("%d%m%Y_%H%M")
-        policy = "rbc" if self.policy_var.get() == "rbc" else "linearregressor"
+        p_var = self.policy_var.get()
+        if p_var == "rbc":
+            policy = "rbc"
+        elif p_var == "RL":
+            policy = "rl"
+        else:
+            policy = "linearregressor"
+
         sim_dir = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "..", "data", "simulations"))
@@ -525,7 +608,6 @@ class App:
         self._sim_writer.writeheader()
         self._sim_file.flush()
         self._session_open = True
-        # Fresh live buffer for this session (kept across pause/resume).
         self._live_cols = {c: [] for c in SIM_ALL_COLS}
         log(self.console, f"Session started -> {self._sim_path}")
         self._update_session_label()
@@ -639,7 +721,8 @@ class App:
 
             self.store(obs)
             self.step_n += 1
-            ctrl = "Neural" if self.policy_var.get() == "neural" else "RBC"
+            p_val = self.policy_var.get()
+            ctrl  = "RL" if p_val == "RL" else ("Neural" if p_val == "neural" else "RBC")
             log(self.console, f"Step {self.step_n} [{ctrl}] reward {reward[0]:.4f}")
             for dev in ACTION_NAMES:
                 d = abs(p[dev] - c[dev])
@@ -675,6 +758,9 @@ class App:
             log(self.console, "Environment not initialised."); return
         if self.policy_var.get() == "neural" and not self.neural.ready:
             log(self.console, "Load the neural policy first."); return
+        if self.policy_var.get() == "RL" and not self.rl.ready:
+            log(self.console, "Load the RL policy first or verify the model file path.")
+            return
         self._cancel_loop()    # drop any stray callback before starting fresh
         self._open_session()   # opens only if not already open (pause→resume)
         self.running  = True
@@ -716,24 +802,22 @@ class App:
 
     def _auto_load_model(self):
         script_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # 1. Try loading Neural / LinearRegressor model
         for rel in self._MODEL_SEARCH_DIR:
             directory = os.path.normpath(os.path.join(script_dir, rel))
             mean_ok = os.path.exists(os.path.join(directory, "feature_mean.npy"))
             std_ok  = os.path.exists(os.path.join(directory, "feature_std.npy"))
-            log(self.console,
-                f"[auto-load] trying {directory} (mean={mean_ok}, std={std_ok})")
             if mean_ok and std_ok:
-                log(self.console,
-                    f"Auto-loading neural model from: {directory}...")
                 ok, msg = self.neural.load(directory)
-                self.neural_status.config(text=f"Status: {msg}",
-                                          fg=GREEN if ok else RED)
-                log(self.console, msg)
-                return
-        log(self.console,
-            "Neural model not found automatically "
-            f"(searched: {', '.join(self._MODEL_SEARCH_DIR)}). "
-            "Please run linear_regressor.py first.")
+                log(self.console, f"[Neural] {msg}")
+                break
+
+        # 2. Auto-load RL model (file unico sovrascritto)
+        rl_path = os.path.normpath(os.path.join(script_dir, "../results/rl_model/actor.pt"))
+        if os.path.exists(rl_path):
+            ok, msg = self.rl.load(rl_path)
+            log(self.console, f"[RL] {msg}")
 
     def load_model(self):
         directory = filedialog.askdirectory(title="Choose model folder...")
@@ -961,8 +1045,8 @@ class App:
             return bool(self.pert_list)
         df = self.sim_df
         if df is not None and "perturbations" in df.columns:
-            vals = df["perturbations"].astype(str).str.strip()
-            return bool((~vals.isin(["", "[]", "nan", "None", "null"])).any())
+            s_str = df["perturbations"].fillna("").map(str).str.strip()
+            return bool((~s_str.isin(["", "[]", "nan", "None", "null"])).any())
         return False
 
     def _get_setpoint_and_band(self):

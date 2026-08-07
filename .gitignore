@@ -37,8 +37,8 @@
 # Distribution files
 **/*.egg-info/*
 
-# RL training experiments (actor weights, schemas, configs)
-**/experiments/*
+# RL training (actor weights, schemas, configs)
+**/rl_model/*
 
 # Reward comparison outputs
 **/reward_comparison/*

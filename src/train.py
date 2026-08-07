@@ -88,7 +88,7 @@ REWARD_CONFIGS: dict[str, dict | None] = {
     # Experiment 1: native CityLearn reward.
     # CityLearnEnv computes net electricity consumption by default; no schema
     # modification is needed.  Cost channel handles discomfort exclusively.
-    'standard': None,
+    # 'standard': None,
 
     # Experiment 2: multi-objective reward (Lorenzo's Challenge2023Reward),
     # but with the discomfort component zeroed out.
@@ -204,10 +204,6 @@ def main_omnisafe(
     """
     args = conf.args
 
-    # Create the per-seed output directory
-    seed_dir = os.path.join(exp_dir, f'seed{args.seed}')
-    os.makedirs(seed_dir, exist_ok=True)
-
     # Derive training length from the schema's simulation window
     ep_steps = (
         schema['simulation_end_time_step']
@@ -263,11 +259,10 @@ def main_omnisafe(
         },
     }
 
-    # Optionally enable CityLearn's built-in episode rendering
     if args.render:
         custom_cfgs['env_cfgs'].update({
             'render_mode': 'during',
-            'render_directory': os.path.join(seed_dir, 'render'),
+            'render_directory': os.path.join(exp_dir, 'render'),
             'render_session_name': f'{args.algo}_{reward_tag}_seed{args.seed}',
         })
 
@@ -292,13 +287,10 @@ def main_omnisafe(
     try:
         actor_net = agent.agent._actor_critic.actor.net.cpu()  # type: ignore[attr-defined]
         actor_script = torch.jit.script(actor_net)
-        actor_path = os.path.join(seed_dir, f'actor_net_{reward_tag}.pt')
+        actor_path = os.path.join(exp_dir, 'actor.pt')
         actor_script.save(actor_path)
-        print(f"Actor network saved → {actor_path}")
+        print(f"\nActor network saved → {actor_path}")
     except AttributeError as exc:
-        # Emit a warning rather than crashing so that training logs and
-        # W&B metrics are not lost if the actor path changes in a future
-        # Omnisafe version.
         print(
             f"[WARN] Could not serialise actor network: {exc}\n"
             f"       Inspect agent.agent._actor_critic structure for '{args.algo}'."
@@ -313,18 +305,10 @@ if __name__ == '__main__':
     conf = TrainConfig()
     args = conf.args
 
-    # ── Experiment directory ──────────────────────────────────────────────────
-    # Use a user-supplied name or fall back to the current timestamp.
-    # Colons are replaced with dashes for Windows/WSL2 filesystem compatibility.
-    exp_name = (
-        args.name
-        if args.name is not None
-        else datetime.now().strftime('%d-%m-%y_%H-%M')
-    )
-    exp_dir = os.path.join(
-        os.path.dirname(__file__), '..', 'results', 'experiments',
-        f'{args.algo}_{exp_name}',
-    )
+    # ── Output directory ──────────────────────────────────────────────────
+    exp_dir = os.path.normpath(os.path.join(
+        os.path.dirname(__file__), '..', 'results', 'rl_model'
+    ))
     os.makedirs(exp_dir, exist_ok=True)
 
     # ── Schema loading ────────────────────────────────────────────────────────
