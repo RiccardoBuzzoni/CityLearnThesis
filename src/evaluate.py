@@ -37,9 +37,11 @@ from linear_regressor import (
     FEATURE_COLS,
     TARGET_COLS,
     DOMAIN_FEATURES,
-    OUTPUT_DIR,
     main as train_linear_models,
 )
+
+ROOT_DIR   = Path(__file__).parent.parent
+OUTPUT_DIR = ROOT_DIR / "results" / "linear_regressor"
 
 # Import of Omnisafe RL Agent wrapper
 from rl_agent import OmnisafeActorAgent
@@ -93,65 +95,73 @@ class LinearRegressorAgent:
             for target, feats in trained_features.items()
         }
 
+    # Exact mapping used in collect_data.py to align feature names
+    _CL_TO_LR = {
+        "indoor_dry_bulb_temperature":               "indoor_temp",
+        "indoor_dry_bulb_temperature_cooling_set_point": "cooling_setpoint",
+        "outdoor_dry_bulb_temperature":              "outdoor_temp",
+        "outdoor_dry_bulb_temperature_predicted_1":  "outdoor_temp_predicted",
+        "cooling_demand":                            "cooling_demand",
+        "electricity_pricing":                       "elec_price",
+        "carbon_intensity":                          "carbon_intensity",
+        "solar_generation":                          "solar_generation",
+        "occupant_count":                            "occupant_count",
+        "hour":                                      "hour",
+        "electrical_storage_soc":                    "electrical_storage_soc",
+        "dhw_storage_soc":                           "dhw_storage_soc",
+        "dhw_demand":                                "dhw_demand",
+    }
+
     def predict(self, observations: list) -> list:
         """
-        Predict actions from raw observations.
-
-        Parameters
-        ----------
-        observations : list of list of float
-            Raw observation vectors from the environment, one per building.
-
-        Returns
-        -------
-        list of list of float
-            Predicted action vectors, one per building.
+        Predict actions from raw observations using the trained linear regressors.
         """
-        actions = []
-        for i, obs_vec in enumerate(observations):
-            obs_names = self.env.observation_names[i]
-            act_names = self.env.action_names[i]
+        obs_vec  = observations[0]
+        obs_names = self.env.observation_names[0]
+        act_names = self.env.action_names[0]
 
-            # Build the full feature vector in FEATURE_COLS order
-            full_obs = np.array([
-                obs_vec[obs_names.index(col)] if col in obs_names else 0.0
-                for col in FEATURE_COLS
-            ], dtype=np.float32)
+        # Create a dictionary of raw environment observations
+        obs_dict = {n: float(obs_vec[i]) for i, n in enumerate(obs_names)}
+        
+        # Map CityLearn keys to internal Regressor feature names
+        lr_obs = {v: obs_dict.get(k, 0.0) for k, v in self._CL_TO_LR.items()}
 
-            # Normalise using training statistics
-            full_obs_norm = (full_obs - self.mean) / self.std
+        # Build the feature vector in the exact FEATURE_COLS sequence
+        row = [lr_obs.get(c, 0.0) for c in FEATURE_COLS]
+        full_obs = np.array(row, dtype=np.float32)
 
-            # Predict each action with its dedicated model
-            action = [0.0] * len(act_names)
-            for target in TARGET_COLS:
-                if target not in act_names:
-                    continue
-                model    = self.trained_models[target]
-                col_idx  = self._col_idx[target]
-                x        = torch.tensor(
-                    full_obs_norm[col_idx], dtype=torch.float32
-                ).unsqueeze(0)   # shape (1, n_feats)
+        # Normalize using training statistics
+        full_obs_norm = (full_obs - self.mean) / self.std
 
-                model.eval()
-                with torch.no_grad():
-                    pred = model(x).item()
+        # Predict actions using individual target models
+        action = [0.0] * len(act_names)
+        for target in TARGET_COLS:
+            if target not in act_names:
+                continue
+            model   = self.trained_models[target]
+            col_idx = self._col_idx[target]
+            x       = torch.tensor(
+                full_obs_norm[col_idx], dtype=torch.float32
+            ).unsqueeze(0)
 
-                action[act_names.index(target)] = pred
+            model.eval()
+            with torch.no_grad():
+                pred = model(x).item()
 
-            # Clip actions to physical bounds
-            CLIP_BOUNDS: dict[str, tuple[float, float]] = {
-                "cooling_device":      (0.0,  1.0),
-                "dhw_storage":         (-1.0, 1.0),
-                "electrical_storage":  (-1.0, 1.0),
-            }
-            for target, (lo, hi) in CLIP_BOUNDS.items():
-                if target in act_names:
-                    idx = act_names.index(target)
-                    action[idx] = float(np.clip(action[idx], lo, hi))
+            action[act_names.index(target)] = pred
 
-            actions.append(action)
+        # Clip actions to physical bounds
+        CLIP_BOUNDS: dict[str, tuple[float, float]] = {
+            "cooling_device":      (0.0,  1.0),
+            "dhw_storage":         (-1.0, 1.0),
+            "electrical_storage":  (-1.0, 1.0),
+        }
+        for target, (lo, hi) in CLIP_BOUNDS.items():
+            if target in act_names:
+                idx = act_names.index(target)
+                action[idx] = float(np.clip(action[idx], lo, hi))
 
-        return actions
+        return [action]
 
 
 # ──────────────────────────────────────────────
@@ -459,17 +469,20 @@ def main():
 
     # ── 4. Plotting — overlaid curves ─────────────────────────────────
     print("\nGenerating evaluation plots...")
+    eval_plots_dir = ROOT_DIR / "results" / "evaluation_plots"
+    eval_plots_dir.mkdir(parents=True, exist_ok=True)
+
     plot_cooling_device(
         results_rbc, results_reg, results_rl,
-        save_path='../results/evaluation_plots/cooling_device.png'
+        save_path=str(eval_plots_dir / "cooling_device.png")
     )
     plot_dhw_storage(
         results_rbc, results_reg, results_rl,
-        save_path='../results/evaluation_plots/dhw_storage.png'
+        save_path=str(eval_plots_dir / "dhw_storage.png")
     )
     plot_electrical_storage(
         results_rbc, results_reg, results_rl,
-        save_path='../results/evaluation_plots/electrical_storage.png'
+        save_path=str(eval_plots_dir / "electrical_storage.png")
     )
 
 if __name__ == '__main__':

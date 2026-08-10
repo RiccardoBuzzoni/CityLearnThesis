@@ -1,4 +1,5 @@
 import pandas as pd
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,9 +11,12 @@ import os
 # 1. CONFIGURATION
 # ──────────────────────────────────────────────
 
-DATA_PATH  = "../data/datasets/advanced_rbc_dataset.csv"
-OUTPUT_DIR = "../results/linear_regressor"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+SCRIPT_DIR   = Path(__file__).parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+DATA_PATH  = PROJECT_ROOT / "data" / "datasets" / "advanced_rbc_dataset.csv"
+OUTPUT_DIR = PROJECT_ROOT / "results" / "linear_regressor"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # All feature columns (observations) present in the dataset
 FEATURE_COLS = [
@@ -330,7 +334,7 @@ def main():
                       f"Eval  MSE: {e_loss:.6f} MAE: {e_mae:.6f}")
 
         plot_metrics(train_losses, eval_losses, train_maes, eval_maes,
-                     target, OUTPUT_DIR)
+                     target, str(OUTPUT_DIR))
         
         # Save model
         model_filename = os.path.join(OUTPUT_DIR, f"model_{target}.pth")
