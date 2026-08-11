@@ -126,6 +126,24 @@ class CityLearnCMDP(CMDP):
         cl_kwargs = {k: v for k, v in kwargs.items() if k in _CL_ACCEPTED_KEYS}
         self._env = CityLearnEnv(**cl_kwargs)
 
+        # ── Price-arbitrage incentive setup ────────────────────────────────────
+        # Precompute the mean electricity price over the episode window so that
+        # _compute_storage_incentive() can reward discharging above-average price
+        # and charging below-average price, instead of a fixed absolute threshold.
+        self._price_incentive_beta: float = kwargs.get('price_incentive_beta', 0.1)
+        pricing_series = np.asarray(
+            self._env.buildings[0].pricing.electricity_pricing, dtype=np.float32
+        )
+        self._price_mean: float = float(pricing_series.mean())
+
+        # Cache indices of storage actions so _compute_storage_incentive() doesn't
+        # repeat a linear search on every step.
+        action_names = self._env.action_names[0]
+        self._storage_action_idx: list[int] = [
+            i for i, name in enumerate(action_names)
+            if name in ('dhw_storage', 'electrical_storage')
+        ]
+
         # Wrap with CityLearn's built-in normalisation so that all observations
         # arrive in a consistent numerical range regardless of physical units.
         # Omnisafe's internal obs_normalize must be set to False to avoid a
@@ -212,6 +230,10 @@ class CityLearnCMDP(CMDP):
         action_np     = action.detach().cpu().numpy()
         action_scaled = self._rescale_action(action_np)
 
+        current_price = float(
+            self._env.buildings[0].pricing.electricity_pricing[self._env.time_step]
+        )
+
         # 2. CityLearn expects List[List[float]] with central_agent=True
         cl_action = [action_scaled.tolist()]
 
@@ -225,6 +247,10 @@ class CityLearnCMDP(CMDP):
         #    np.asarray() normalises any of those to an ndarray, on which
         #    .sum() is unambiguous for both the runtime and the type checker.
         reward = float(np.asarray(reward_val, dtype=np.float32).sum())
+
+        # 4b. Add price-arbitrage shaping for storage devices
+        storage_incentive = self._compute_storage_incentive(action_scaled, current_price)
+        reward += self._price_incentive_beta * storage_incentive
 
         # 5. Compute thermal comfort cost from post-step building state
         cost = self._compute_cost()
@@ -353,3 +379,25 @@ class CityLearnCMDP(CMDP):
                 total_cost += violation
 
         return total_cost
+
+    def _compute_storage_incentive(self, action_scaled: np.ndarray, current_price: float) -> float:
+        """
+        Price-arbitrage shaping term: rewards discharging storage devices when
+        electricity price is above the episode average, and charging them when
+        it is below average. This counteracts the myopic incentive of the base
+        reward (which always favours discharging, since that lowers the current
+        step's net electricity consumption regardless of future price/need).
+
+        Returns
+        -------
+        float
+            Incentive value, positive for price-aware charge/discharge timing,
+            negative for the opposite (charging expensive, discharging cheap).
+        """
+        price_centered = current_price - self._price_mean
+
+        incentive = 0.0
+        for idx in self._storage_action_idx:
+            incentive += -action_scaled[idx] * price_centered
+
+        return incentive

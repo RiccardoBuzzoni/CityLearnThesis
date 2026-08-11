@@ -88,11 +88,13 @@ REWARD_CONFIGS: dict[str, dict | None] = {
     # Experiment 1: native CityLearn reward.
     # CityLearnEnv computes net electricity consumption by default; no schema
     # modification is needed.  Cost channel handles discomfort exclusively.
-    # 'standard': None,
+
+    #'standard': None,
 
     # Experiment 2: multi-objective reward (Lorenzo's Challenge2023Reward),
     # but with the discomfort component zeroed out.
     # w1=electricity cost, w2=carbon emissions, w3=discomfort (→ 0), w4=unused.
+    
     'custom': {
         'type': 'citylearn.reward_function.Challenge2023Reward',
         'attributes': {
@@ -256,6 +258,7 @@ def main_omnisafe(
         'env_cfgs': {
             'schema': schema,
             'central_agent': True,
+            'price_incentive_beta': 0.1
         },
     }
 
