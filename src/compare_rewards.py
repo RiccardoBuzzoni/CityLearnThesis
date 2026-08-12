@@ -175,7 +175,7 @@ def save_kpi_csv(envs: dict[str, CityLearnEnv], out_dir: str) -> None:
     """
     rows = []
     for label, env in envs.items():
-        kpis = get_kpis(env)
+        kpis = get_kpis(env, decimals=6)
         district = kpis[kpis['level'] == 'district'].copy()
         district['model'] = label
         rows.append(district)
@@ -238,7 +238,7 @@ def main() -> None:
     print(f"{'=' * 50}")
 
     for tag, env in envs.items():
-        kpis = get_kpis(env)
+        kpis = get_kpis(env, decimals=6)
         print_kpi_table(kpis, label=tag)
 
     # ── Identify the better model ─────────────────────────────────────────────
@@ -247,15 +247,14 @@ def main() -> None:
     # Both are normalised KPIs where 1.0 = no-control baseline.
     scores: dict[str, float] = {}
     for tag, env in envs.items():
-        kpis = get_kpis(env)
+        kpis = get_kpis(env, decimals=6)
         district = kpis[kpis['level'] == 'district']
         discomfort = district[district['kpi'] == 'Discomfort']['value'].values
         emissions  = district[district['kpi'] == 'Emissions']['value'].values
         # Weighted sum: discomfort weighted more heavily as the CMDP cost signal
-        scores[tag] = (
-            0.7 * float(discomfort[0]) if len(discomfort) else 0.0
-          + 0.3 * float(emissions[0])  if len(emissions)  else 0.0
-        )
+        discomfort_score = float(discomfort[0]) if len(discomfort) else 0.0
+        emissions_score = float(emissions[0]) if len(emissions) else 0.0
+        scores[tag] = 0.7 * discomfort_score + 0.3 * emissions_score
 
     best = min(scores, key=lambda t: scores[t])
     print(f"\n{'=' * 50}")

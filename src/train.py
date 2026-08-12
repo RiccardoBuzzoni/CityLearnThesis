@@ -258,7 +258,8 @@ def main_omnisafe(
         'env_cfgs': {
             'schema': schema,
             'central_agent': True,
-            'price_incentive_beta': 0.1
+            'price_incentive_beta': 0.1,
+            'storage_terminal_penalty': 10.0,
         },
     }
 

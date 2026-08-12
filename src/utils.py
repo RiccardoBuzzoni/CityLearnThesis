@@ -192,7 +192,7 @@ def default_env_config(dataset: str) -> Dict[str, Any]:
 
     return schema
 
-def get_kpis(env: CityLearnEnv) -> pd.DataFrame:
+def get_kpis(env: CityLearnEnv, decimals: int | None = 2) -> pd.DataFrame:
     """Returns evaluation KPIs.
 
     Electricity cost and carbon emissions KPIs are provided
@@ -203,6 +203,9 @@ def get_kpis(env: CityLearnEnv) -> pd.DataFrame:
     ----------
     env: CityLearnEnv
         CityLearn environment instance.
+    decimals: int or None
+        Decimal places for presentation. Use ``None`` to preserve the raw
+        KPI values, which is important for small discomfort proportions.
 
     Returns
     -------
@@ -227,8 +230,8 @@ def get_kpis(env: CityLearnEnv) -> pd.DataFrame:
     ].dropna()
     kpis['cost_function'] = kpis['cost_function'].map(lambda x: kpi_names[x])
 
-    # round up the values to 2 decimal places for readability
-    kpis['value'] = kpis['value'].round(2)
+    if decimals is not None:
+        kpis['value'] = kpis['value'].round(decimals)
 
     # rename the column that defines the KPIs
     kpis = kpis.rename(columns={'cost_function': 'kpi'})
@@ -256,7 +259,7 @@ def plot_district_kpis(envs: dict[str, CityLearnEnv], base_path: str) -> None:
     kpis_list = []
 
     for k, v in envs.items():
-        kpis = get_kpis(v)
+        kpis = get_kpis(v, decimals=4)
         kpis = kpis[kpis['level']=='district'].copy()
         kpis['env_id'] = k
         kpis_list.append(kpis)
@@ -286,7 +289,7 @@ def plot_district_kpis(envs: dict[str, CityLearnEnv], base_path: str) -> None:
         ax.set_title(k)
 
         for j in range(len(ax.containers)):
-            ax.bar_label(ax.containers[j], fmt='%.2f') # type: ignore[arg-type]
+            ax.bar_label(ax.containers[j], fmt='%.4f') # type: ignore[arg-type]
 
         # Add dashed vertical line at x=1
         ax.axvline(x=1, color='gray', linestyle='--', linewidth=1.5, label='No Control')

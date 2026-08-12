@@ -174,6 +174,16 @@ class CityLearnCMDP(CMDP):
         self._act_low:  np.ndarray = self._env.action_space[0].low.copy()
         self._act_high: np.ndarray = self._env.action_space[0].high.copy()
 
+        # Preserve useful stored energy instead of rewarding a policy that
+        # simply drains the storage before the finite episode ends.
+        self._storage_terminal_penalty: float = kwargs.get(
+            'storage_terminal_penalty', 10.0
+        )
+        self._initial_storage_soc = np.asarray([
+            self._env.buildings[0].dhw_storage.initial_soc,
+            self._env.buildings[0].electrical_storage.initial_soc,
+        ], dtype=np.float32)
+
     # ── Gymnasium / Omnisafe interface ────────────────────────────────────────
 
     def reset(
@@ -251,6 +261,11 @@ class CityLearnCMDP(CMDP):
         # 4b. Add price-arbitrage shaping for storage devices
         storage_incentive = self._compute_storage_incentive(action_scaled, current_price)
         reward += self._price_incentive_beta * storage_incentive
+
+        # Storage can still be used throughout the episode, but draining it
+        # at the horizon is penalised because that energy is not free.
+        if terminated:
+            reward -= self._storage_terminal_penalty * self._storage_soc_deficit()
 
         # 5. Compute thermal comfort cost from post-step building state
         cost = self._compute_cost()
@@ -401,3 +416,12 @@ class CityLearnCMDP(CMDP):
             incentive += -action_scaled[idx] * price_centered
 
         return incentive
+
+    def _storage_soc_deficit(self) -> float:
+        """Return normalized storage energy missing at the episode horizon."""
+        building = self._env.buildings[0]
+        current_soc = np.asarray([
+            building.dhw_storage.soc[building.time_step - 1],
+            building.electrical_storage.soc[building.time_step - 1],
+        ], dtype=np.float32)
+        return float(np.maximum(self._initial_storage_soc - current_soc, 0.0).sum())

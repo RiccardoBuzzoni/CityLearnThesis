@@ -308,6 +308,54 @@ def plot_electrical_storage(res_rbc, res_reg=None, res_rl=None, save_path='elect
     print(f"Plot saved in: {save_path}")
 
 
+def plot_discomfort(res_rbc, res_reg=None, res_rl=None, save_path='discomfort.png'):
+    """Plot total, hot, and cold discomfort proportions per controller."""
+    results = {'RBC': res_rbc}
+    if res_reg is not None:
+        results['Regressor'] = res_reg
+    if res_rl is not None:
+        results['RL'] = res_rl
+
+    values = []
+    for result in results.values():
+        temperature = result['env_h']['temperature']
+        indoor = np.asarray(temperature['indoor_dry_bulb_temperature'])
+        setpoint = np.asarray(temperature['indoor_dry_bulb_temperature_set_point'])
+        band = np.asarray(temperature['comfort_band'])
+        hot = indoor > setpoint + band
+        cold = indoor < setpoint - band
+        values.append([
+            float(np.mean(hot | cold)),
+            float(np.mean(hot)),
+            float(np.mean(cold)),
+        ])
+
+    labels = list(results)
+    values = np.asarray(values)
+    x = np.arange(len(labels))
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for index, (name, color) in enumerate([
+        ('Total', 'tab:blue'), ('Hot', 'tab:red'), ('Cold', 'tab:cyan')
+    ]):
+        ax.bar(x + (index - 1) * width, values[:, index], width,
+               label=name, color=color)
+    ax.set_xticks(x, labels)
+    ax.set_ylabel('Proportion of timesteps')
+    ax.set_ylim(0, max(0.01, float(values.max()) * 1.25))
+    ax.set_title('Thermal Discomfort')
+    ax.grid(axis='y', alpha=0.3)
+    ax.legend()
+    for container in ax.containers:
+        ax.bar_label(container, fmt='%.4f', padding=2)
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, format='png', dpi=300)
+    plt.close(fig)
+    print(f"Plot saved in: {save_path}")
+
+
 # ──────────────────────────────────────────────
 # EVALUATION LOOP
 # ──────────────────────────────────────────────
@@ -483,6 +531,10 @@ def main():
     plot_electrical_storage(
         results_rbc, results_reg, results_rl,
         save_path=str(eval_plots_dir / "electrical_storage.png")
+    )
+    plot_discomfort(
+        results_rbc, results_reg, results_rl,
+        save_path=str(eval_plots_dir / "discomfort.png")
     )
 
 if __name__ == '__main__':
