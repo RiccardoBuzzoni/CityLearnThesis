@@ -176,9 +176,8 @@ class CityLearnCMDP(CMDP):
 
         # Preserve useful stored energy instead of rewarding a policy that
         # simply drains the storage before the finite episode ends.
-        self._storage_terminal_penalty: float = kwargs.get(
-            'storage_terminal_penalty', 10.0
-        )
+        self._dhw_terminal_penalty: float = kwargs.get('dhw_terminal_penalty', 10.0)
+        self._electrical_terminal_penalty: float = kwargs.get('electrical_terminal_penalty', 10.0)
         self._initial_storage_soc = np.asarray([
             self._env.buildings[0].dhw_storage.initial_soc,
             self._env.buildings[0].electrical_storage.initial_soc,
@@ -264,8 +263,12 @@ class CityLearnCMDP(CMDP):
 
         # Storage can still be used throughout the episode, but draining it
         # at the horizon is penalised because that energy is not free.
-        if terminated:
-            reward -= self._storage_terminal_penalty * self._storage_soc_deficit()
+        if terminated or truncated:
+            dhw_deficit, elec_deficit = self._storage_soc_deficit()
+            reward -= (
+                self._dhw_terminal_penalty * dhw_deficit
+                + self._electrical_terminal_penalty * elec_deficit
+            )
 
         # 5. Compute thermal comfort cost from post-step building state
         cost = self._compute_cost()
@@ -417,11 +420,16 @@ class CityLearnCMDP(CMDP):
 
         return incentive
 
-    def _storage_soc_deficit(self) -> float:
-        """Return normalized storage energy missing at the episode horizon."""
+    def _storage_soc_deficit(self) -> tuple[float, float]:
+        """"
+        Return (dhw_deficit, electrical_deficit): normalized storage energy
+        missing at the episode horizon, kept separate per device so each can
+        be weighted independently in step().
+        """
         building = self._env.buildings[0]
         current_soc = np.asarray([
             building.dhw_storage.soc[building.time_step - 1],
             building.electrical_storage.soc[building.time_step - 1],
         ], dtype=np.float32)
-        return float(np.maximum(self._initial_storage_soc - current_soc, 0.0).sum())
+        deficit = np.maximum(self._initial_storage_soc - current_soc, 0.0)
+        return float(deficit[0]), float(deficit[1])

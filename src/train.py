@@ -259,7 +259,8 @@ def main_omnisafe(
             'schema': schema,
             'central_agent': True,
             'price_incentive_beta': 0.1,
-            'storage_terminal_penalty': 10.0,
+            'dhw_terminal_penalty': 15.0,
+            'electrical_terminal_penalty': 10.0,
         },
     }
 
