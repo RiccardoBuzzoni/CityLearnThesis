@@ -58,3 +58,7 @@
 # Python environment
 **/.env
 **/*.pyc
+
+# Debug scripts
+**/debug_step.py
+**/debug_step2.py

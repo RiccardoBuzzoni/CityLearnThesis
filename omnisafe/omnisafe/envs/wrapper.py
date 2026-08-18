@@ -507,7 +507,20 @@ class ActionScale(Wrapper):
             truncated: Whether the episode has been truncated due to a time limit.
             info: Some information logged by the environment.
         """
-        if self._env._env._env.type == 'CityLearn':
+        # Walk the wrapper chain defensively: some CityLearn env classes (e.g.
+        # CityLearnCMDP) already rescale actions internally and use a shorter
+        # wrapper chain (no TimeLimit/AutoReset), so this chain may not reach
+        # an object with a `.type` attribute at all. Falling back to the
+        # generic rescale below is safe in that case, since such classes
+        # already declare their action_space as [-1, 1].
+        _probe = self._env
+        for _ in range(3):
+            _probe = getattr(_probe, '_env', None)
+            if _probe is None:
+                break
+        _is_citylearn_special = getattr(_probe, 'type', None) == 'CityLearn'
+
+        if _is_citylearn_special:
             input_range = self._action_space.high - self._action_space.low
             output_range = self._env._env._env._env.action_space[0].high - self._env._env._env._env.action_space[0].low
             scaled_vector = (action - self._action_space.low) / input_range

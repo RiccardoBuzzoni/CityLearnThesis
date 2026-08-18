@@ -100,7 +100,7 @@ class CityLearnCMDP(CMDP):
 
     # Omnisafe registry: links the string 'CityLearn-v0' to this class.
     # Must be a ClassVar so CMDP.support_envs() can read it before __init__.
-    _support_envs: ClassVar[list[str]] = ['CityLearn-v0']
+    _support_envs: ClassVar[list[str]] = ['CityLearnCMDP-v0']
 
     # Tell Omnisafe not to add its own TimeLimit / AutoReset wrappers.
     # CityLearn signals episode termination via the standard `terminated`
@@ -109,8 +109,15 @@ class CityLearnCMDP(CMDP):
     need_auto_reset_wrapper: bool = False
 
     def __init__(self, env_id: str, **kwargs: Any) -> None:
+
+        with open('/tmp/init_debug.log', 'a') as f:
+            f.write(f"ENTERED __init__, kwargs={list(kwargs.keys())}\n")
+
         # Validates env_id against _support_envs; raises ValueError if unknown
         super().__init__(env_id)
+
+        with open('/tmp/init_debug.log', 'a') as f:
+            f.write("super().__init__() completato senza eccezioni\n")
 
         # Omnisafe expects these instance attributes on every CMDP subclass
         self._num_envs: int = 1
@@ -174,14 +181,15 @@ class CityLearnCMDP(CMDP):
         self._act_low:  np.ndarray = self._env.action_space[0].low.copy()
         self._act_high: np.ndarray = self._env.action_space[0].high.copy()
 
-        # Preserve useful stored energy instead of rewarding a policy that
-        # simply drains the storage before the finite episode ends.
-        self._dhw_terminal_penalty: float = kwargs.get('dhw_terminal_penalty', 10.0)
-        self._electrical_terminal_penalty: float = kwargs.get('electrical_terminal_penalty', 10.0)
-        self._initial_storage_soc = np.asarray([
-            self._env.buildings[0].dhw_storage.initial_soc,
-            self._env.buildings[0].electrical_storage.initial_soc,
-        ], dtype=np.float32)
+        # Continuous anti-depletion penalty: applied every step (not just at
+        # episode end) so the signal has the same cadence as the base reward
+        # and the price-arbitrage incentive, instead of being a single sparse
+        # event the policy can trivially satisfy by topping up SoC only in the
+        # last step or two.
+        self._dhw_soc_penalty: float = kwargs.get('dhw_soc_penalty', 1.0)
+        self._electrical_soc_penalty: float = kwargs.get('electrical_soc_penalty', 1.0)
+        self._soc_min_target: float = kwargs.get('soc_min_target', 0.2)
+
 
     # ── Gymnasium / Omnisafe interface ────────────────────────────────────────
 
@@ -261,24 +269,21 @@ class CityLearnCMDP(CMDP):
         storage_incentive = self._compute_storage_incentive(action_scaled, current_price)
         reward += self._price_incentive_beta * storage_incentive
 
-        # Storage can still be used throughout the episode, but draining it
-        # at the horizon is penalised because that energy is not free.
-        if terminated or truncated:
-            dhw_deficit, elec_deficit = self._storage_soc_deficit()
-            reward -= (
-                self._dhw_terminal_penalty * dhw_deficit
-                + self._electrical_terminal_penalty * elec_deficit
-            )
+        # Storage can still be drawn down when useful, but sitting below the
+        # minimum target SoC is penalised at every step — not just at episode
+        # end — so the agent can't game the signal by topping up only right
+        # before the episode terminates.
+        reward -= self._compute_storage_soc_penalty()
 
         # 5. Compute thermal comfort cost from post-step building state
         cost = self._compute_cost()
 
         # 6. Pack all outputs as torch.Tensor (required by Omnisafe's CMDP API)
         obs_t        = torch.as_tensor(obs_list[0], dtype=torch.float32)
-        reward_t     = torch.tensor([reward],        dtype=torch.float32)
-        cost_t       = torch.tensor([cost],          dtype=torch.float32)
-        terminated_t = torch.tensor([terminated],    dtype=torch.bool)
-        truncated_t  = torch.tensor([truncated],     dtype=torch.bool)
+        reward_t     = torch.tensor(reward,        dtype=torch.float32)
+        cost_t       = torch.tensor(cost,          dtype=torch.float32)
+        terminated_t = torch.tensor(terminated,    dtype=torch.bool)
+        truncated_t  = torch.tensor(truncated,     dtype=torch.bool)
 
         return obs_t, reward_t, cost_t, terminated_t, truncated_t, info
 
@@ -379,11 +384,12 @@ class CityLearnCMDP(CMDP):
         for building in self._env.buildings:
             # Guard: temperature history is populated after env.step() but
             # may be empty immediately after reset() on some CityLearn versions
-            if not building.indoor_dry_bulb_temperature:
+            history = building.indoor_dry_bulb_temperature
+            if len(history) == 0:
                 continue
 
             # Latest post-step indoor temperature and cooling setpoint
-            indoor_temp = building.indoor_dry_bulb_temperature[-1]
+            indoor_temp = history[-1]
             setpoint    = building.indoor_dry_bulb_temperature_cooling_set_point[-1]
 
             # comfort_band can be a scalar attribute or a time-indexed array
@@ -420,16 +426,27 @@ class CityLearnCMDP(CMDP):
 
         return incentive
 
-    def _storage_soc_deficit(self) -> tuple[float, float]:
-        """"
-        Return (dhw_deficit, electrical_deficit): normalized storage energy
-        missing at the episode horizon, kept separate per device so each can
-        be weighted independently in step().
+    def _compute_storage_soc_penalty(self) -> float:
+        """
+        Continuous anti-depletion penalty: applied every step, proportional to
+        how far each storage device's SoC sits below a minimum target. Unlike
+        a terminal-only penalty, this cannot be satisfied by simply topping up
+        SoC in the last step or two — it reflects behaviour across the whole
+        episode, not just the final instant.
+
+        Returns
+        -------
+        float
+            Total penalty (>= 0) to subtract from reward at the current step.
         """
         building = self._env.buildings[0]
-        current_soc = np.asarray([
-            building.dhw_storage.soc[building.time_step - 1],
-            building.electrical_storage.soc[building.time_step - 1],
-        ], dtype=np.float32)
-        deficit = np.maximum(self._initial_storage_soc - current_soc, 0.0)
-        return float(deficit[0]), float(deficit[1])
+        current_dhw_soc  = float(building.dhw_storage.soc[building.time_step - 1])
+        current_elec_soc = float(building.electrical_storage.soc[building.time_step - 1])
+
+        dhw_shortfall  = max(self._soc_min_target - current_dhw_soc, 0.0)
+        elec_shortfall = max(self._soc_min_target - current_elec_soc, 0.0)
+
+        return (
+            self._dhw_soc_penalty * dhw_shortfall
+            + self._electrical_soc_penalty * elec_shortfall
+        )
