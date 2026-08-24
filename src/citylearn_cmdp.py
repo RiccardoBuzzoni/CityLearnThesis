@@ -263,10 +263,14 @@ class CityLearnCMDP(CMDP):
         #    per-building values, or an ndarray depending on the version.
         #    np.asarray() normalises any of those to an ndarray, on which
         #    .sum() is unambiguous for both the runtime and the type checker.
-        reward = float(np.asarray(reward_val, dtype=np.float32).sum())
+        base_reward = float(np.asarray(reward_val, dtype=np.float32).sum())
+        reward = base_reward
 
         # 4b. Add price-arbitrage shaping for storage devices
-        storage_incentive = self._compute_storage_incentive(action_scaled, current_price)
+        # storage_incentive = self._compute_storage_incentive(action_scaled, current_price)
+        storage_incentive = self._compute_storage_incentive(
+            action_scaled, current_price
+        )
         reward += self._price_incentive_beta * storage_incentive
 
         # Storage can still be drawn down when useful, but sitting below the

@@ -259,8 +259,8 @@ def main_omnisafe(
             'schema': schema,
             'central_agent': True,
             'price_incentive_beta': 0.1,
-            'dhw_soc_penalty': 20.0,
-            'electrical_soc_penalty': 5.0,
+            'dhw_soc_penalty': 0.5,
+            'electrical_soc_penalty': 0.0,
             'soc_min_target': 0.2,
         },
     }
@@ -273,22 +273,10 @@ def main_omnisafe(
         })
 
     # ── Training ──────────────────────────────────────────────────────────────
-    # 'CityLearn-v0' was registered by the `import citylearn_cmdp` at the top
+    # 'CityLearnCMDP-v0' was registered by the `import citylearn_cmdp` at the top
     # of this file.  Omnisafe resolves the string to CityLearnCMDP via its
     # internal ENV_REGISTRY.
     agent = omnisafe.Agent(args.algo, 'CityLearnCMDP-v0', custom_cfgs=custom_cfgs) # type: ignore[attr-defined]
-
-    # DEBUG: inspect env
-    with open('/tmp/agent_inspect.log', 'a') as f:
-        obj = agent.agent
-        f.write(f"[start] type={type(obj)} module={type(obj).__module__}\n")
-        depth = 0
-        while hasattr(obj, '_env') and depth < 10:
-            obj = obj._env
-            depth += 1
-            f.write(f"[depth {depth}] type={type(obj)} module={type(obj).__module__}\n")
-            attrs = [a for a in dir(obj) if not a.startswith('__')]
-            f.write(f"[depth {depth}] attrs={attrs}\n")
 
     agent.learn()
 

@@ -336,19 +336,24 @@ def plot_discomfort(res_rbc, res_reg=None, res_rl=None, save_path='discomfort.pn
     width = 0.25
 
     fig, ax = plt.subplots(figsize=(9, 5))
+    bars_list = []
     for index, (name, color) in enumerate([
         ('Total', 'tab:blue'), ('Hot', 'tab:red'), ('Cold', 'tab:cyan')
     ]):
-        ax.bar(x + (index - 1) * width, values[:, index], width,
+        bar_container = ax.bar(x + (index - 1) * width, values[:, index], width,
                label=name, color=color)
+        bars_list.append(bar_container)
+
     ax.set_xticks(x, labels)
     ax.set_ylabel('Proportion of timesteps')
     ax.set_ylim(0, max(0.01, float(values.max()) * 1.25))
     ax.set_title('Thermal Discomfort')
     ax.grid(axis='y', alpha=0.3)
     ax.legend()
-    for container in ax.containers:
+
+    for container in bars_list:
         ax.bar_label(container, fmt='%.4f', padding=2)
+
     plt.tight_layout()
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path, format='png', dpi=300)
@@ -379,10 +384,12 @@ def evaluate_agent(agent_class, env):
     done = False
     while not done:
         actions = agent.predict(obs)
+
         # Record actions before stepping
         for j, name in enumerate(act_names):
             action_history[name].append(actions[0][j])
         obs, rewards, terminated, truncated, info = env.step(actions)
+    
         done = terminated or truncated
 
     b = env.buildings[0]
