@@ -3,20 +3,33 @@ citylearn_cmdp.py
 -----------------
 Omnisafe-compatible CMDP wrapper for the CityLearn building energy
 management environment.  Importing this module is enough to register
-'CityLearn-v0' in Omnisafe's environment registry (the @env_register
+'CityLearnCMDP-v0' in Omnisafe's environment registry (the @env_register
 decorator fires at import time), so the only required call in train.py is:
 
-    import citylearn_cmdp                         # registers 'CityLearn-v0'
-    agent = omnisafe.Agent('PPOLag', 'CityLearn-v0', custom_cfgs=cfgs)
+    import citylearn_cmdp                         # registers 'CityLearnCMDP-v0'
+    agent = omnisafe.Agent('PPOLag', 'CityLearnCMDP-v0', custom_cfgs=cfgs)
+
+Note: registered under 'CityLearnCMDP-v0', not 'CityLearn-v0' — the latter
+is already used by Omnisafe's own bundled reference implementation
+(omnisafe/envs/citylearn_env.py), and reusing it silently overrides this
+class in the env registry.
 
 Reward / Cost split
 -------------------
 The two signals that define a CMDP are kept strictly separate:
 
-* Reward  — taken directly from CityLearn's built-in reward function.
-            The choice (native net-consumption vs Challenge2023Reward with
-            w3=0) is made at the *schema* level before environment creation,
-            so this wrapper stays fully reward-agnostic.
+* Reward  — CityLearn's built-in reward function (chosen at the schema
+            level, before environment creation) plus two per-step shaping
+            terms added in step():
+              - a price-arbitrage incentive rewarding discharge above the
+                episode-average price and charge below it
+                (_compute_storage_incentive);
+              - a continuous anti-depletion penalty proportional to how
+                far each storage device's SoC sits below a target level
+                (_compute_storage_soc_penalty).
+            Both apply every step rather than only at episode end, since a
+            terminal-only signal is too sparse to compete with the base
+            reward's per-step incentive to drain storage.
 
 * Cost    — computed here as the sum of upper-bound thermal-comfort
             violations across all active buildings at each time step:
@@ -78,7 +91,7 @@ class CityLearnCMDP(CMDP):
     Parameters
     ----------
     env_id : str
-        Must be ``'CityLearn-v0'``.
+        Must be ``'CityLearnCMDP-v0'``.
     **kwargs
         Forwarded from the ``env_cfgs`` block of Omnisafe's ``custom_cfgs``.
         Expected keys:
@@ -96,6 +109,15 @@ class CityLearnCMDP(CMDP):
             Accepted but intentionally ignored.  Cost is computed internally
             by ``_compute_cost()``; passing a string here is a remnant of the
             reference training script and has no effect.
+        price_incentive_beta : float, default 0.1
+            Weight of the price-arbitrage reward shaping term.
+        dhw_soc_penalty : float, default 1.0
+        electrical_soc_penalty : float, default 1.0
+            Weights of the per-step anti-depletion penalty for each
+            storage device.
+        soc_min_target : float, default 0.2
+            Minimum target SoC below which the anti-depletion penalty
+            activates for each storage device.
     """
 
     # Omnisafe registry: links the string 'CityLearn-v0' to this class.
@@ -110,14 +132,8 @@ class CityLearnCMDP(CMDP):
 
     def __init__(self, env_id: str, **kwargs: Any) -> None:
 
-        with open('/tmp/init_debug.log', 'a') as f:
-            f.write(f"ENTERED __init__, kwargs={list(kwargs.keys())}\n")
-
         # Validates env_id against _support_envs; raises ValueError if unknown
         super().__init__(env_id)
-
-        with open('/tmp/init_debug.log', 'a') as f:
-            f.write("super().__init__() completato senza eccezioni\n")
 
         # Omnisafe expects these instance attributes on every CMDP subclass
         self._num_envs: int = 1
@@ -236,12 +252,17 @@ class CityLearnCMDP(CMDP):
 
         Returns
         -------
-        obs        : torch.Tensor – normalised observation,    shape ``(n_obs,)``
-        reward     : torch.Tensor – energy-efficiency signal,  shape ``(1,)``
-        cost       : torch.Tensor – comfort violation ≥ 0,     shape ``(1,)``
-        terminated : torch.Tensor – episode-end flag,          shape ``(1,)``
-        truncated  : torch.Tensor – always False here,         shape ``(1,)``
+        obs        : torch.Tensor – normalised observation, shape ``(n_obs,)``
+        reward     : torch.Tensor – scalar energy-efficiency signal
+        cost       : torch.Tensor – scalar comfort violation ≥ 0
+        terminated : torch.Tensor – scalar episode-end flag
+        truncated  : torch.Tensor – scalar time-limit flag
         info       : dict
+
+        Note: reward/cost/terminated/truncated are returned as 0-dim
+        tensors (not shape (1,)) — Omnisafe's Unsqueeze wrapper adds the
+        batch dimension itself, and passing already-batched tensors here
+        causes a shape mismatch downstream in episode-metric accumulation.
         """
         # 1. Convert Omnisafe tensor → numpy and rescale to physical bounds
         action_np     = action.detach().cpu().numpy()
@@ -267,7 +288,6 @@ class CityLearnCMDP(CMDP):
         reward = base_reward
 
         # 4b. Add price-arbitrage shaping for storage devices
-        # storage_incentive = self._compute_storage_incentive(action_scaled, current_price)
         storage_incentive = self._compute_storage_incentive(
             action_scaled, current_price
         )

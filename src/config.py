@@ -70,9 +70,9 @@ class TrainConfig(Config):
         agent is tested on data it has never seen.
 
     --name : str, default=None
-        Human-readable label for the experiment.  Used as part of the
-        output directory name: ``results/experiments/{algo}_{name}/``.
-        Defaults to the current timestamp when omitted (set in train.py).
+        Human-readable label for the experiment.  Currently accepted but
+        not yet wired into the output path — train.py always writes to
+        a fixed ``results/rl_model/`` regardless of this value.
 
     --render : flag, default=False
         Enable CityLearn episode rendering during training.
@@ -129,9 +129,9 @@ class TrainConfig(Config):
             type=str,
             default=None,
             help=(
-                "Human-readable experiment name used for the output folder "
-                "(results/experiments/{algo}_{name}/). "
-                "Defaults to the current timestamp when omitted."
+                "Human-readable experiment name. Currently accepted but not "
+                "yet wired into the output path — train.py always writes to "
+                "a fixed results/rl_model/ regardless of this value."
             ),
         )
 

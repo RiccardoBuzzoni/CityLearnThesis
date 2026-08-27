@@ -3,9 +3,9 @@ train.py
 --------
 Training script for the Omnisafe constrained RL agent on CityLearn.
 
-Two experiments are launched sequentially, one for each entry in
-REWARD_CONFIGS, following the tutor's indication to compare a standard
-reward against a custom multi-objective one:
+REWARD_CONFIGS defines one or more named reward experiments, following
+the tutor's indication to compare a standard reward against a custom
+multi-objective one:
 
   'standard'  — native CityLearn reward (net electricity consumption).
                 Discomfort is handled exclusively by the CMDP cost
@@ -19,29 +19,36 @@ reward against a custom multi-objective one:
                 the reward as well would penalise it twice and confuse
                 the Lagrangian optimisation.
 
-Both experiments run on the same training schema, seed, and algorithm
-so that their results are directly comparable for the thesis evaluation.
+Only one entry should be active (uncommented) at a time: every entry
+runs against the same fixed output path (see "Output layout" below), so
+running more than one in sequence silently overwrites the actor saved by
+the previous one, with no separate file per reward_tag.
+
+The storage-shaping parameters (price_incentive_beta, dhw_soc_penalty,
+electrical_soc_penalty, soc_min_target) are independent of REWARD_CONFIGS
+and live in main_omnisafe()'s env_cfgs — they apply regardless of which
+reward experiment is selected.
 
 Output layout
 -------------
 results/
-└── experiments/
-    └── {algo}_{name}/
-        ├── seed{n}/
-        │   ├── actor_net_standard.pt   ← TorchScript actor (experiment 1)
-        │   └── actor_net_custom.pt     ← TorchScript actor (experiment 2)
-        ├── schemas/
-        │   ├── schema.json             ← full original schema
-        │   ├── train_schema.json       ← first frac% of simulation window
-        │   └── eval_schema.json        ← remaining (1-frac)% of window
-        └── train_config.yaml           ← all CLI arguments for reproducibility
+└── rl_model/
+    ├── actor.pt              ← TorchScript actor for the experiment that
+    │                            ran last (overwritten on every run — see
+    │                            note above)
+    ├── train_config.yaml     ← all CLI arguments for reproducibility
+    └── schemas/
+        ├── schema.json       ← full original schema
+        ├── train_schema.json ← first frac% of simulation window
+        └── eval_schema.json  ← remaining (1-frac)% of window
 
 Usage
 -----
     # Default run (PPOLag, cpu, 200 episodes, no wandb)
     python train.py --episodes 200
 
-    # With wandb logging and a custom experiment name
+    # With wandb logging (--name is accepted but not yet used for the
+    # output path — see config.py's TrainConfig docstring)
     python train.py --episodes 500 --wandb --name thesis_run1
 
     # GPU training with interactive schema selection
@@ -64,8 +71,6 @@ from datetime import datetime
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(_project_root)
 sys.path.append(os.path.join(_project_root, 'omnisafe'))
-
-import types as _types
 
 # Importing citylearn_cmdp triggers the @env_register decorator, which
 # registers 'CityLearn-v0' in Omnisafe's environment registry.

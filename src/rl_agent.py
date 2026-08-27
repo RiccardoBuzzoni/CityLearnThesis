@@ -70,8 +70,9 @@ class OmnisafeActorAgent:
     Parameters
     ----------
     fname : str
-        Path to the TorchScript actor file (e.g. 'actor_net_standard.pt'
-        or 'actor_net_custom.pt') saved by train.py.
+        Path to the TorchScript actor file saved by train.py — currently
+        always ``results/rl_model/actor.pt`` (a single fixed path, not
+        named per reward experiment; see train.py's module docstring).
     env : CityLearnEnv
         CityLearn environment used for evaluation.  It must share the same
         schema (observation space, action space) as the training environment

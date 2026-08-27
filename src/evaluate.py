@@ -431,25 +431,17 @@ def evaluate_agent(agent_class, env):
 
 
 def _find_rl_model() -> str | None:
-    """Find the path to the RL actor model file."""
+    """
+    Find the path to the RL actor model file.
+
+    Only one location is currently produced by train.py: a fixed
+    results/rl_model/actor.pt (see train.py's module docstring for why
+    the per-experiment naming/subfolder scheme described there isn't
+    actually implemented yet).
+    """
     root_dir = Path(__file__).parent.parent
-    
-    # 1. Primary path: results/rl_model/actor.pt
-    primary_actor = root_dir / "results" / "rl_model" / "actor.pt"
-    if primary_actor.exists():
-        return str(primary_actor)
-
-    # 2. Fallback: search in results/experiments/
-    exp_dir = root_dir / "results" / "experiments"
-    if exp_dir.exists():
-        candidates = list(exp_dir.glob("**/actor.pt")) + \
-                     list(exp_dir.glob("**/actor_net_custom.pt")) + \
-                     list(exp_dir.glob("**/actor_net_standard.pt"))
-        if candidates:
-            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            return str(candidates[0])
-
-    return None
+    actor_path = root_dir / "results" / "rl_model" / "actor.pt"
+    return str(actor_path) if actor_path.exists() else None
 
 
 def main():
