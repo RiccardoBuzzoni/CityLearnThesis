@@ -106,7 +106,13 @@ OBS_PERTURB_TARGETS = [
     "electricity_pricing", "carbon_intensity", "occupant_count",
     "cooling_demand", "dhw_demand", "indoor_dry_bulb_temperature",
     "electrical_storage_soc", "dhw_storage_soc",
+    "indoor_dry_bulb_temperature_cooling_set_point",
 ]
+# Shorthand used by the plot helpers below (comfort-band shading, setpoint
+# delta annotation, ...). Kept as one constant so every reference to the
+# cooling setpoint observation stays in sync.
+SP_COL = "indoor_dry_bulb_temperature_cooling_set_point"
+TEMP_COL = "indoor_dry_bulb_temperature"
 ACTION_PERTURB_TARGETS = {
     "cooling_device [0, 1]":      (0,  1),
     "dhw_storage [-1, 1]":        (-1, 1),
@@ -639,7 +645,7 @@ class App:
         # Copy only the columns the plot needs, detached from _live_cols so the
         # next session's buffer reset can't mutate this archived snapshot.
         cols = {k: list(v) for k, v in self._live_cols.items()
-                if k == "step" or k == "reward"
+                if k == "step" or k == "reward" or k == "perturbations"
                 or k.endswith("_clean") or k.endswith("_pert")}
         idx   = len(self._archived_runs)
         color = run_color(idx)
@@ -1055,7 +1061,7 @@ class App:
         yet. The setpoint is exogenous — it doesn't change with the chosen
         controller — so the baseline dataset is preferred (it's the longest,
         most "complete" series) and the live/sim session is used otherwise."""
-        SP = "indoor_dry_bulb_temperature_cooling_set_point"
+        SP = SP_COL
         band = float(getattr(self.rbc, "comfort_band", 2.0)) if self.rbc else 2.0
 
         df_d = self.dataset_df
@@ -1068,6 +1074,133 @@ class App:
             return steps, sp, band
 
         return None, None, None
+
+    def _plot_run_sources(self):
+        """Yield {'steps', 'cols', 'color', 'label'} for every run currently
+        drawn on the unified plot: the live/just-loaded run (if any) and each
+        frozen archived run. 'cols' maps column name -> list of raw values,
+        same shape whether it comes from the live buffer, a loaded sim_df, or
+        an archived snapshot. Centralises what used to be three near-duplicate
+        branches (perturbation markers, setpoint delta, comfort band)."""
+        if self._session_open:
+            cols  = self._live_cols
+            steps = cols.get("step")
+            if steps:
+                yield {"steps": steps, "cols": cols,
+                       "color": run_color(len(self._archived_runs)),
+                       "label": f"run {len(self._archived_runs) + 1}"}
+        elif self.sim_df is not None and not self._sim_df_archived:
+            df    = self.sim_df
+            steps = (df["step"].tolist() if "step" in df.columns
+                     else list(range(len(df))))
+            cols  = {c: df[c].tolist() for c in df.columns}
+            yield {"steps": steps, "cols": cols, "color": PURPLE, "label": "sim"}
+        for run in self._archived_runs:
+            steps = run["cols"].get("step")
+            if steps:
+                yield {"steps": steps, "cols": run["cols"],
+                       "color": run["color"], "label": run["label"]}
+
+    @staticmethod
+    def _first_active_perturbation_index(pert_col):
+        """Index of the first step in `pert_col` (the CSV/live 'perturbations'
+        meta-column, one JSON string per step) where a perturbation was
+        actually active, or None if the whole run is perturbation-free."""
+        if pert_col is None:
+            return None
+        for i, raw in enumerate(pert_col):
+            s = str(raw).strip() if raw is not None else ""
+            if s and s not in ("[]", "nan", "None", "null"):
+                return i
+        return None
+
+    def _perturbation_markers(self):
+        """(step, color) pairs marking, for every run currently drawn on the
+        plot, the timestep at which a perturbation first became active."""
+        markers = []
+        for src in self._plot_run_sources():
+            idx = self._first_active_perturbation_index(src["cols"].get("perturbations"))
+            if idx is not None:
+                markers.append((src["steps"][idx], src["color"]))
+        return markers
+
+    @staticmethod
+    def _series_applied_delta(clean_vals, pert_vals):
+        """Mean of the non-negligible (perturbed - clean) differences between
+        two series, or None if they're numerically identical. Used only to
+        detect WHETHER a run actually perturbed the setpoint (gating), not
+        to report a delta to the user anymore."""
+        if clean_vals is None or pert_vals is None:
+            return None
+        c = np.asarray(clean_vals, dtype=float)
+        p = np.asarray(pert_vals,  dtype=float)
+        n = min(len(c), len(p))
+        if n == 0:
+            return None
+        diff   = p[:n] - c[:n]
+        active = diff[np.abs(diff) > 1e-6]
+        if len(active) == 0:
+            return None
+        return float(np.mean(active))
+
+    @staticmethod
+    def _tracking_delta(temp_vals, sp_clean_vals, sp_pert_vals, pert_idx):
+        """Mean (indoor temperature − setpoint in use), split at the step the
+        perturbation started: before it, the standard setpoint is the one the
+        policy was actually driving toward; from it onward, the perturbed one
+        is. Returns (delta_pre, delta_post); either can be None if that
+        segment doesn't exist."""
+        if temp_vals is None or sp_clean_vals is None:
+            return None, None
+        t  = np.asarray(temp_vals,      dtype=float)
+        sc = np.asarray(sp_clean_vals,  dtype=float)
+        n  = min(len(t), len(sc))
+        if n == 0:
+            return None, None
+        t, sc = t[:n], sc[:n]
+
+        pre = None
+        if pert_idx is None:
+            pre = float(np.mean(t - sc))          # never perturbed: whole run
+        elif pert_idx > 0:
+            k = min(pert_idx, n)
+            pre = float(np.mean(t[:k] - sc[:k]))
+
+        post = None
+        if pert_idx is not None:
+            sp = (np.asarray(sp_pert_vals, dtype=float)
+                  if sp_pert_vals is not None else sc)
+            m  = min(n, len(sp))
+            if pert_idx < m:
+                post = float(np.mean(t[pert_idx:m] - sp[pert_idx:m]))
+        return pre, post
+
+    def _setpoint_perturbation_info(self):
+        """For every run where the cooling setpoint was actually perturbed:
+        the run's colour/label, its perturbed-setpoint series (for the
+        comfort-band overlay), and the mean indoor-temp tracking delta before
+        and after the perturbation started (vs. the setpoint actually in use
+        at each point)."""
+        infos = []
+        for src in self._plot_run_sources():
+            cols     = src["cols"]
+            sp_clean = cols.get(f"{SP_COL}_clean")
+            sp_pert  = cols.get(f"{SP_COL}_pert")
+            if self._series_applied_delta(sp_clean, sp_pert) is None:
+                continue   # setpoint untouched in this run
+            idx = self._first_active_perturbation_index(cols.get("perturbations"))
+            pre, post = self._tracking_delta(
+                cols.get(f"{TEMP_COL}_clean"), sp_clean, sp_pert, idx)
+            steps = src["steps"]
+            n = min(len(steps), len(sp_pert))
+            infos.append({
+                "color": src["color"], "label": src["label"],
+                "steps":   np.asarray(steps[:n],   dtype=float),
+                "sp_pert": np.asarray(sp_pert[:n], dtype=float),
+                "band": float(getattr(self.rbc, "comfort_band", 2.0)) if self.rbc else 2.0,
+                "pre": pre, "post": post,
+            })
+        return infos
 
     def _draw_unified_plot(self, quiet=False):
         disp = self.unified_plot_col_var.get()
@@ -1135,6 +1268,18 @@ class App:
                 ax.plot(band_steps, band_sp, "--",
                         color="gray", linewidth=1.2,
                         label="Cooling setpoint", zorder=1)
+
+            # Perturbed setpoint + its own comfort band, one per run where the
+            # setpoint was actually perturbed, in that run's colour so it's
+            # traceable back to the corresponding temperature/action curves.
+            for info in self._setpoint_perturbation_info():
+                ax.fill_between(info["steps"],
+                                 info["sp_pert"] + info["band"],
+                                 info["sp_pert"] - info["band"],
+                                 color=info["color"], alpha=0.12, zorder=0)
+                ax.plot(info["steps"], info["sp_pert"], "--",
+                        color=info["color"], linewidth=1.2, alpha=0.9,
+                        label=f"{info['label']} setpoint (perturbed)", zorder=1)
 
         if baseline_series is not None and not deviation:
             ax.plot(np.arange(len(baseline_series)), baseline_series,
@@ -1208,6 +1353,38 @@ class App:
             if live and len(cur_steps):
                 ax.plot(cur_steps[-1], cur_vals[-1], "o",
                         color=cur_color, markersize=5)
+
+        # Vertical marker(s): the timestep at which a perturbation first
+        # became active, one per run currently on the plot (own run colour).
+        # Only the first line carries a legend label, so overlapping runs
+        # don't spam the legend with repeated entries.
+        first_marker_labeled = False
+        for step_val, color in self._perturbation_markers():
+            ax.axvline(step_val, color=color, linestyle=":", linewidth=1.6,
+                       alpha=0.85, zorder=2,
+                       label=None if first_marker_labeled else "perturbation introduced")
+            first_marker_labeled = True
+
+        # Cooling-setpoint tracking-error annotation: for every run where the
+        # setpoint was perturbed, the mean (indoor temp − setpoint in use),
+        # split into before/after the perturbation started — since the
+        # "setpoint in use" itself changes at that point. Shown regardless of
+        # which column is currently selected, stacked top-left, run-coloured.
+        y0 = 0.98
+        for info in self._setpoint_perturbation_info():
+            parts = []
+            if info["pre"] is not None:
+                parts.append(f"pre {info['pre']:+.2f}°C")
+            if info["post"] is not None:
+                parts.append(f"post {info['post']:+.2f}°C")
+            if not parts:
+                continue
+            text = f"{info['label']}: Δ temp–setpoint " + " · ".join(parts)
+            ax.text(0.02, y0, text, transform=ax.transAxes, fontsize=9,
+                    color=info["color"], va="top", ha="left",
+                    bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                              ec=info["color"], alpha=0.85))
+            y0 -= 0.055
 
         if deviation:
             ax.set_title(f"{disp} — deviation (perturbed − clean)",

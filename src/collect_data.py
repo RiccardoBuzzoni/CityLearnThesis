@@ -326,10 +326,6 @@ class RLAgent:
 
             mean, log_std = output.chunk(2, dim=-1)
 
-            # DEBUG
-            raw_action = torch.tanh(mean).detach().cpu().numpy()
-            print("raw:", raw_action, "| rescaled:", self._rescale(raw_action))
-
             action = torch.tanh(mean).detach().cpu().numpy()
             action = self._rescale(action)
             actions.append(action.tolist())
