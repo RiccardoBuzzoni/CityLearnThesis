@@ -1,7 +1,8 @@
 import sys, os
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import io, csv, tkinter as tk
+import io, csv, json, tkinter as tk
+from typing import Any
 from tkinter import ttk, filedialog
 from datetime import datetime
 
@@ -13,12 +14,14 @@ except Exception:
 try:
     from main_rbc import AdvancedRBC
     from CityLearn.citylearn.citylearn import CityLearnEnv
+    from CityLearn.citylearn.wrappers import NormalizedObservationWrapper
     from utils import default_env_config, Config
     CITYLEARN_AVAILABLE = True
 except Exception as e:
     CITYLEARN_AVAILABLE = False
     CITYLEARN_ERROR = str(e)
     AdvancedRBC = CityLearnEnv = default_env_config = None
+    NormalizedObservationWrapper = None
 
 import matplotlib
 matplotlib.use("TkAgg")
@@ -27,6 +30,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import pandas as pd
 import numpy as np
+import torch
 
 # Colours
 BG_APP       = "#ECECEC"
@@ -292,8 +296,16 @@ class RLPolicy:
     def __init__(self):
         self.ready: bool = False
         self.actor = None
+        # Typed as Any: CityLearn ships no py.typed stubs, so pyright/pylance
+        # can't resolve NormalizedObservationWrapper as an actual type (it
+        # shows up as Unknown) — using it in a type expression fails even
+        # when the import itself succeeds at runtime. Any tells the checker
+        # to stop verifying attribute access on this one on purpose, instead
+        # of fighting an unresolvable third-party type.
+        self._normalizer: Any = None
+        self._action_space = None
 
-    def load(self, model_path: str) -> tuple[bool, str]:
+    def load(self, model_path: str, env=None) -> tuple[bool, str]:
         """
         Loads the RL TorchScript actor model from disk.
         """
@@ -309,49 +321,171 @@ class RLPolicy:
 
             if hasattr(self.actor, "eval"):
                 self.actor.eval()
+
+            if env is not None:
+                if NormalizedObservationWrapper is None:
+                    return False, "CityLearn not available: can't build the observation normalizer."
+                self._normalizer = NormalizedObservationWrapper(env)
+                self._action_space = env.action_space[0]
+            
             self.ready = True
             return True, f"RL model loaded from: {os.path.basename(model_path)}"
+        
         except Exception as e:
             return False, f"Loading error (RL): {e}"
 
-    def predict(self, obs_dict: dict) -> dict[str, float]:
+    def _rescale(self, action: np.ndarray) -> np.ndarray:
+        """
+        Rescale dell'output della policy da [-1, 1]
+        ai limiti fisici reali dell'action space di CityLearn.
+        """
+        if self._action_space is None:
+            raise RuntimeError("RL action space is not loaded.")
+
+        action = np.clip(action, -1.0, 1.0)
+
+        low = self._action_space.low
+        high = self._action_space.high
+
+        scaled = low + (action + 1.0) / 2.0 * (high - low)
+
+        return scaled.astype(np.float32)
+
+    # Maps a perturbable observation name to (attribute-holder, array name)
+    # on the CityLearn Building object. Covers everything that's a plain
+    # stored time-series array; `solar_generation`, `cooling_demand` and
+    # `dhw_demand` are DERIVED quantities in CityLearn (not simple stored
+    # arrays) and are intentionally left out — perturbing those still works
+    # for RBC/regressor (which read obs_dict directly) but is NOT reflected
+    # in the RL policy's input, since its normalization always re-reads the
+    # live building state (see predict()'s docstring).
+    _PERTURB_ATTR_PATHS = {
+        "indoor_dry_bulb_temperature": ("energy_simulation", "indoor_dry_bulb_temperature"),
+        "indoor_dry_bulb_temperature_cooling_set_point": ("energy_simulation", "indoor_dry_bulb_temperature_cooling_set_point"),
+        "outdoor_dry_bulb_temperature": ("weather", "outdoor_dry_bulb_temperature"),
+        "outdoor_dry_bulb_temperature_predicted_1": ("weather", "outdoor_dry_bulb_temperature_predicted_1"),
+        "electricity_pricing": ("pricing", "electricity_pricing"),
+        "carbon_intensity": ("carbon_intensity", "carbon_intensity"),
+        "occupant_count": ("energy_simulation", "occupant_count"),
+        "electrical_storage_soc": ("electrical_storage", "soc"),
+        "dhw_storage_soc": ("dhw_storage", "soc"),
+    }
+
+    def _normalized_values_with_overrides(self, overrides: dict) -> list:
+        """
+        Returns the correctly-normalized observation vector (same order as
+        self._normalizer.env.observation_names[0]) reflecting `overrides`
+        {obs_name: perturbed_value}.
+
+        Needed because CityLearn's NormalizedObservationWrapper.observation()
+        ignores whatever you pass it and always re-reads the live building
+        state (see predict()'s docstring) — so the only way to get the
+        REAL normalization pipeline to reflect a perturbed value is to
+        write it into the building's own array for one instant, read the
+        result back out, and immediately restore the true value. The
+        restore happens in `finally` so a mid-call exception can never
+        leave the live simulation state corrupted.
+        """
+        assert self._normalizer is not None  # predict() already guarantees this
+        building = self._normalizer.env.unwrapped.buildings[0]
+        t = building.time_step
+        saved: dict[tuple, float] = {}
+        try:
+            for name, value in overrides.items():
+                path = self._PERTURB_ATTR_PATHS.get(name)
+                if path is None:
+                    continue  # derived quantity — not directly patchable, skip
+                holder_name, arr_name = path
+                arr = getattr(getattr(building, holder_name), arr_name)
+                saved[(holder_name, arr_name)] = arr[t]
+                arr[t] = value
+            norm = building.observations(normalize=True, periodic_normalization=True)
+            return list(norm.values())
+        finally:
+            for (holder_name, arr_name), original in saved.items():
+                getattr(getattr(building, holder_name), arr_name)[t] = original
+
+    def predict(self, obs_dict: dict, overrides: dict | None = None) -> dict[str, float]:
         """
         Predicts actions using the loaded RL policy given the current observation dict.
+
+        Usa la stessa pipeline di rl_agent.py:
+            raw obs
+            -> normalizzazione
+            -> actor
+            -> mean/log_std
+            -> tanh(mean)
+            -> rescale [-1, 1] verso action space CityLearn
+
+        `overrides`: {obs_name: perturbed_value} for the observation-level
+        perturbations currently active (from compute()). Needed because
+        CityLearn's NormalizedObservationWrapper.observation() ignores the
+        raw observation list you pass it and always re-reads the live,
+        UNPERTURBED building state instead — so without this, the RL policy
+        never sees any obs-level perturbation regardless of what obs_dict
+        contains. See _normalized_values_with_overrides()'s docstring.
         """
-        if not self.ready or self.actor is None:
-            return {a: 0.0 for a in ACTION_NAMES}
-        
-        try:
-            import torch
-            # 1. Costruisce il vettore con esattamente le 13 osservazioni attese
-            obs_vector = [float(obs_dict.get(k, 0.0)) for k in OBS_NAMES]
-            x = torch.tensor(obs_vector, dtype=torch.float32).unsqueeze(0)
-            
-            with torch.no_grad():
-                # Valuta il modello TorchScript
-                output = self.actor(x)
+        if (
+            not self.ready
+            or self.actor is None
+            or self._normalizer is None
+            or self._action_space is None
+        ):
+            raise RuntimeError(
+                "RL model, normalizer or action space is not loaded or ready."
+            )
 
-            # 2. Estrae la media (mean) dall'output [mean || log_std]
-            if isinstance(output, torch.Tensor):
-                if output.shape[-1] > len(ACTION_NAMES):
-                    mean, _ = output.chunk(2, dim=-1)
-                else:
-                    mean = output
-                # Applica tanh per portare l'azione nel range [-1, 1]
-                raw_actions = torch.tanh(mean).squeeze(0).cpu().numpy().tolist()
-            else:
-                raw_actions = [0.0] * len(ACTION_NAMES)
+        if overrides:
+            norm_values = self._normalized_values_with_overrides(overrides)
+        else:
+            # Stesso ordine delle osservazioni dell'environment
+            obs_names = self._normalizer.env.observation_names[0]
+            raw_obs_list = [[
+                float(obs_dict.get(name, 0.0))
+                for name in obs_names
+            ]]
+            # NormalizedObservationWrapper.observation() ignores raw_obs_list
+            # and re-reads the live env — fine here since nothing needs to
+            # be overridden for the clean/unperturbed call.
+            norm_values = self._normalizer.observation(raw_obs_list)[0]
 
-            # 3. Mappa le azioni ai nomi dei device e applica il clamp ai limiti fisici
-            actions: dict[str, float] = {}
-            for i, name in enumerate(ACTION_NAMES):
-                val = float(raw_actions[i]) if i < len(raw_actions) else 0.0
-                actions[name] = clamp(name, val)
+        # 2. Tensor senza dimensione batch aggiuntiva
+        obs_t = torch.as_tensor(
+            norm_values,
+            dtype=torch.float32
+        )
 
-            return actions
-        except Exception as e:
-            print(f"[RL Error] Predict failed: {e}")
-            return {a: 0.0 for a in ACTION_NAMES}
+        # 3. Forward dell'attore
+        with torch.no_grad():
+            output = self.actor(obs_t)
+
+        # 4. Stessa logica di rl_agent.py
+        mean, log_std = output.chunk(2, dim=-1)
+
+        # Non influenza l'azione deterministica, ma mantiene
+        # la stessa pipeline del wrapper originale
+        log_std = torch.clamp(
+            log_std,
+            min=-20.0,
+            max=2.0
+        )
+
+        # 5. Output dell'attore in [-1, 1]
+        action = torch.tanh(mean).detach().cpu().numpy()
+
+        # 6. Rescaling ai limiti fisici di CityLearn
+        action = self._rescale(action)
+
+        # 7. Associa le azioni al loro vero ordine nell'environment
+        env_action_names = self._normalizer.env.action_names[0]
+
+        actions = {}
+
+        for i, name in enumerate(env_action_names):
+            val = float(action[i])
+            actions[name] = clamp(name, val)
+
+        return actions
 
 # ── Redirector ────────────────────────────────────────────────────────────────
 class Redirector(io.StringIO):
@@ -394,6 +528,9 @@ class App:
 
         self.env    = None; self.rbc = None
         self.obs    = None; self.obs_dict = {}
+        # Physically-accurate post-dynamics indoor_temp/SOC, kept separate
+        # from obs_dict on purpose — see compute()'s docstring.
+        self.obs_dict_corrected: dict = {}
         self.neural = NeuralPolicy()
         self.rl     = RLPolicy()
         self.neural_status = tk.Label(self.root) 
@@ -411,6 +548,13 @@ class App:
         self.pert_list: list[dict] = []   # active perturbations
         self.pert_feat   = tk.StringVar(value=PERTURB_DISPLAY[0])
         self.pert_amount = tk.DoubleVar(value=0.0)
+
+        # ── Auto cooling-setpoint schedule: splits the episode into thirds
+        # (standard / high / low) so the three policies get perturbed at the
+        # exact same fraction of the episode without having to click "Add" by
+        # hand at the right moment in each separate run.
+        self.sp_schedule_var = tk.BooleanVar(value=False)
+        self._sp_schedule_phase = None  # 1/2/3, or None before the first check
 
         # ── Baseline dataset
         self.dataset_df       = None
@@ -468,6 +612,7 @@ class App:
             self.rbc = AdvancedRBC(self.env)
             self.store(self.env.reset()[0])
             self.step_n = 0
+            self._sp_schedule_phase = None
             log(self.console,
                 f"Environment ready - {self.env.time_steps - 1} steps per episode.")
             self.update_obs(); self.refresh()
@@ -491,12 +636,17 @@ class App:
         try:
             self.store(self.env.reset()[0])
             self.step_n = 0
+            self._sp_schedule_phase = None
             log(self.console, "Environment reset.")
             self.update_obs(); self.refresh()
         except Exception as e:
             log(self.console, f"Reset error: {e}")
 
-    def store(self, obs):
+    def store(self, obs, corrected_override=None):
+        """corrected_override: optional {name: value} of physically-accurate
+        post-dynamics values (indoor_temp/SOC) for CSV logging and the UI
+        panel ONLY. self.obs_dict — what actually feeds predict() — always
+        comes straight from the raw `obs` CityLearn returned, unmodified."""
         self.obs   = obs
         if self.rbc is None:
             log(self.console, "Error: RBC not initialised.")
@@ -504,6 +654,9 @@ class App:
         assert self.rbc is not None
         names = self.rbc.observation_names[0]
         self.obs_dict = {n: obs[0][i] for i, n in enumerate(names)}
+        self.obs_dict_corrected = dict(self.obs_dict)
+        if corrected_override:
+            self.obs_dict_corrected.update(corrected_override)
 
     def update_obs(self):
         for n, w in self.obs_lbl.items():
@@ -511,7 +664,7 @@ class App:
                 val = self.rbc.comfort_band if self.rbc else 0.0
                 w.config(text=f"{val:.3f}")
             else:
-                w.config(text=f"{self.obs_dict.get(n, 0.0):.3f}")
+                w.config(text=f"{self.obs_dict_corrected.get(n, 0.0):.3f}")
 
     # ── Policy ────────────────────────────────────────────────────────────────
     def _env_action_order(self):
@@ -530,7 +683,7 @@ class App:
             
         return list(ACTION_NAMES)
 
-    def predict(self, obs_dict):
+    def predict(self, obs_dict, obs_overrides=None):
         policy_type = self.policy_var.get()
 
         if policy_type == "rbc":
@@ -544,7 +697,7 @@ class App:
         elif policy_type == "neural":
             return self.neural.predict(obs_dict)
         elif policy_type == "RL":
-            return self.rl.predict(obs_dict)
+            return self.rl.predict(obs_dict, overrides=obs_overrides)
 
         return {a: 0.0 for a in ACTION_NAMES}
 
@@ -552,12 +705,33 @@ class App:
         """
         Returns (clean_actions, perturbed_actions, clean_obs, perturbed_obs).
         Applies ALL perturbations in self.pert_list.
+
+        Two parallel observation baselines are used on purpose:
+          - self.obs_dict (raw, exactly as CityLearn returned it) feeds the
+            actual predict() calls below — matching collect_data.py /
+            evaluate.py. Feeding the policy the physically-corrected values
+            instead changes the distribution the trained LinearRegressor
+            models see at rollout time relative to what they were trained
+            under, and broke cooling entirely (runaway indoor temperature).
+          - self.obs_dict_corrected (physically-accurate post-dynamics
+            indoor_temp/SOC) is what gets returned here for CSV logging and
+            plotting, so the thesis plots still show the real building
+            state rather than CityLearn's pre-dynamics artefact.
+        Perturbations are applied identically to both baselines, so the
+        logged "perturbed" values still match what the policy actually saw
+        (offset from whichever baseline that call used).
         """
-        c_obs = dict(self.obs_dict)
-        p_obs = dict(self.obs_dict)
+        c_obs     = dict(self.obs_dict)
+        p_obs     = dict(self.obs_dict)
+        c_obs_log = dict(self.obs_dict_corrected)
+        p_obs_log = dict(self.obs_dict_corrected)
 
         # Separate obs perturbations from action perturbations
         action_deltas: dict[str, float] = {}
+        # obs-level perturbations, keyed by final (post-perturbation) value —
+        # only used by the RL path, whose normalizer otherwise can't see them
+        # (see RLPolicy.predict()'s docstring).
+        obs_overrides: dict[str, float] = {}
         for p in self.pert_list:
             feat    = p["feat"]
             amount  = p["amount"]
@@ -566,18 +740,21 @@ class App:
                 action_deltas[action_target] = amount
             else:
                 if p.get("mode") == "assign":
-                    p_obs[feat] = amount # Occupant count
+                    p_obs[feat]     = amount  # Occupant count
+                    p_obs_log[feat] = amount
                 else:
-                    p_obs[feat] = p_obs.get(feat, 0.0) + amount
+                    p_obs[feat]     = p_obs.get(feat, 0.0) + amount
+                    p_obs_log[feat] = p_obs_log.get(feat, 0.0) + amount
+                obs_overrides[feat] = p_obs[feat]
 
         c = self.predict(c_obs)
-        p = self.predict(p_obs)
+        p = self.predict(p_obs, obs_overrides=obs_overrides)
 
         # Apply action-level perturbations on top of policy output
         for act_name, val in action_deltas.items():
             p[act_name] = clamp(act_name, val)
 
-        return c, p, c_obs, p_obs
+        return c, p, c_obs_log, p_obs_log
 
     def refresh(self):
         # Nothing to update when the action-comparison panel is disabled.
@@ -689,43 +866,74 @@ class App:
             for k in SIM_ALL_COLS:
                 self._live_cols[k].append(row.get(k))
 
+    def _apply_sp_schedule(self):
+        """When the auto cooling-setpoint schedule is enabled, keeps the
+        setpoint perturbation in sync with the current third of the episode:
+        standard for the first third, +high for the middle third, +low for
+        the last third. Runs once per step (before compute()) so every
+        policy's run gets perturbed at exactly the same fraction-of-episode
+        point, regardless of how each one otherwise plays out — no need to
+        babysit 3 separate runs and click "Add" at matching moments."""
+        if not self.sp_schedule_var.get() or not self.env:
+            return
+        try:
+            high = float(self.sp_schedule_high_entry.get().replace(",", "."))
+            low  = float(self.sp_schedule_low_entry.get().replace(",", "."))
+        except ValueError:
+            return  # invalid entry: leave whatever's already active alone
+
+        total = max(1, self.env.time_steps - 1)
+        third = total / 3.0
+        if self.step_n < third:
+            phase, amount = 1, None
+        elif self.step_n < 2 * third:
+            phase, amount = 2, high
+        else:
+            phase, amount = 3, low
+
+        if self._sp_schedule_phase == phase:
+            return  # already applied for this phase, nothing to do
+        self._sp_schedule_phase = phase
+
+        self.pert_list = [p for p in self.pert_list if p["feat"] != SP_COL]
+        if amount is not None and amount != 0.0:
+            self.pert_list.append({"feat": SP_COL, "amount": amount, "mode": "delta"})
+            log(self.console,
+                f"[auto schedule] step {self.step_n}: cooling setpoint {amount:+.2f}")
+        else:
+            log(self.console,
+                f"[auto schedule] step {self.step_n}: cooling setpoint standard")
+        self._rebuild_pert_list_ui()
+
     # ── Simulation ────────────────────────────────────────────────────────────
     def step(self):
         if not self.env or self.obs is None:
             log(self.console, "Environment not initialised."); return
+        self._apply_sp_schedule()
         c, p, c_obs, p_obs = self.compute()
         acts        = p if self.pert_list else c
         # Pack in the ENV's action order, not ACTION_NAMES, or each value lands
         # on the wrong device (e.g. the electrical_storage action driving the
         # cooling_device → invalid cooling → CityLearn aborts the step).
         action_list = [[acts[a] for a in self._env_action_order()]]
-        
-        # Initialise to avoid unbound errors
-        obs_names = []
 
         try:
             obs, reward, term, trunc, _ = self.env.step(action_list)
-
-            # Use fix
             building = self.env.buildings[0]
-
-            if self.rbc is not None:
-                obs_names = self.rbc.observation_names[0]
-            else:
+            if self.rbc is None:
                 log(self.console, "RBC controller not initialized.")
-                # Handle the fallback logic here
 
-            obs[0][obs_names.index('electrical_storage_soc')] = building.electrical_storage.soc[building.time_step - 1]
-            obs[0][obs_names.index('dhw_storage_soc')] = building.dhw_storage.soc[building.time_step - 1]
-            # Same "post-step" fix as the SOC lines above, applied to indoor
-            # temperature: the obs array returned by env.step() carries the
-            # pre-dynamics value (still tracking the setpoint), while the
-            # building object already holds the temperature actually reached
-            # after the dynamics model has processed this step's cooling_device
-            # action. collect_data.py reads it the same way (see _simulate()).
-            obs[0][obs_names.index('indoor_dry_bulb_temperature')] = building.indoor_dry_bulb_temperature[building.time_step - 1]
+            # Physically-accurate post-dynamics values, for CSV/plot/UI-panel
+            # display ONLY (see compute()'s docstring for why `obs` itself
+            # must stay untouched: it's what feeds the policy on the NEXT
+            # step, and collect_data.py / evaluate.py never patch it either).
+            corrected_override = {
+                'electrical_storage_soc': building.electrical_storage.soc[building.time_step - 1],
+                'dhw_storage_soc': building.dhw_storage.soc[building.time_step - 1],
+                'indoor_dry_bulb_temperature': building.indoor_dry_bulb_temperature[building.time_step - 1],
+            }
 
-            self.store(obs)
+            self.store(obs, corrected_override=corrected_override)
             self.step_n += 1
             p_val = self.policy_var.get()
             ctrl  = "RL" if p_val == "RL" else ("Neural" if p_val == "neural" else "RBC")
@@ -822,7 +1030,7 @@ class App:
         # 2. Auto-load RL model (file unico sovrascritto)
         rl_path = os.path.normpath(os.path.join(script_dir, "../results/rl_model/actor.pt"))
         if os.path.exists(rl_path):
-            ok, msg = self.rl.load(rl_path)
+            ok, msg = self.rl.load(rl_path, env=self.env)
             log(self.console, f"[RL] {msg}")
 
     def load_model(self):
@@ -1102,103 +1310,116 @@ class App:
                        "color": run["color"], "label": run["label"]}
 
     @staticmethod
-    def _first_active_perturbation_index(pert_col):
-        """Index of the first step in `pert_col` (the CSV/live 'perturbations'
-        meta-column, one JSON string per step) where a perturbation was
-        actually active, or None if the whole run is perturbation-free."""
-        if pert_col is None:
-            return None
+    def _perturbation_change_indices(pert_col):
+        """Indices where the *content* of the 'perturbations' meta-column
+        changes from the previous step — i.e. every point a perturbation
+        started, stopped, or changed amount. Catches every phase boundary of
+        a multi-phase schedule (e.g. standard -> +3 -> -3), not just the
+        first "off -> on" transition."""
+        if not pert_col:
+            return []
+        idxs = []
+        prev = None
         for i, raw in enumerate(pert_col):
-            s = str(raw).strip() if raw is not None else ""
-            if s and s not in ("[]", "nan", "None", "null"):
-                return i
-        return None
+            s    = str(raw).strip() if raw is not None else ""
+            norm = "" if s in ("[]", "nan", "None", "null", "") else s
+            if i > 0 and norm != prev:
+                idxs.append(i)
+            prev = norm
+        return idxs
 
     def _perturbation_markers(self):
         """(step, color) pairs marking, for every run currently drawn on the
-        plot, the timestep at which a perturbation first became active."""
+        plot, every timestep at which the active perturbation(s) changed —
+        started, stopped, or switched to a different amount."""
         markers = []
         for src in self._plot_run_sources():
-            idx = self._first_active_perturbation_index(src["cols"].get("perturbations"))
-            if idx is not None:
+            for idx in self._perturbation_change_indices(src["cols"].get("perturbations")):
                 markers.append((src["steps"][idx], src["color"]))
         return markers
 
     @staticmethod
-    def _series_applied_delta(clean_vals, pert_vals):
-        """Mean of the non-negligible (perturbed - clean) differences between
-        two series, or None if they're numerically identical. Used only to
-        detect WHETHER a run actually perturbed the setpoint (gating), not
-        to report a delta to the user anymore."""
-        if clean_vals is None or pert_vals is None:
-            return None
-        c = np.asarray(clean_vals, dtype=float)
-        p = np.asarray(pert_vals,  dtype=float)
-        n = min(len(c), len(p))
-        if n == 0:
-            return None
-        diff   = p[:n] - c[:n]
-        active = diff[np.abs(diff) > 1e-6]
-        if len(active) == 0:
-            return None
-        return float(np.mean(active))
+    def _sp_amount_series(pert_col):
+        """Per-step cooling-setpoint perturbation amount actually declared in
+        the 'perturbations' meta-column (0.0 for steps where the setpoint
+        wasn't perturbed, regardless of what other perturbations were active).
+        Used to split a run into standard/high/low style phases."""
+        if not pert_col:
+            return []
+        out = []
+        for raw in pert_col:
+            amt = 0.0
+            s = str(raw).strip() if raw is not None else ""
+            if s and s not in ("[]", "nan", "None", "null"):
+                try:
+                    for p in json.loads(s):
+                        if p.get("feat") == SP_COL:
+                            amt = float(p.get("amount", 0.0))
+                except Exception:
+                    pass
+            out.append(amt)
+        return out
 
     @staticmethod
-    def _tracking_delta(temp_vals, sp_clean_vals, sp_pert_vals, pert_idx):
-        """Mean (indoor temperature − setpoint in use), split at the step the
-        perturbation started: before it, the standard setpoint is the one the
-        policy was actually driving toward; from it onward, the perturbed one
-        is. Returns (delta_pre, delta_post); either can be None if that
-        segment doesn't exist."""
-        if temp_vals is None or sp_clean_vals is None:
-            return None, None
-        t  = np.asarray(temp_vals,      dtype=float)
-        sc = np.asarray(sp_clean_vals,  dtype=float)
-        n  = min(len(t), len(sc))
-        if n == 0:
-            return None, None
-        t, sc = t[:n], sc[:n]
-
-        pre = None
-        if pert_idx is None:
-            pre = float(np.mean(t - sc))          # never perturbed: whole run
-        elif pert_idx > 0:
-            k = min(pert_idx, n)
-            pre = float(np.mean(t[:k] - sc[:k]))
-
-        post = None
-        if pert_idx is not None:
-            sp = (np.asarray(sp_pert_vals, dtype=float)
-                  if sp_pert_vals is not None else sc)
-            m  = min(n, len(sp))
-            if pert_idx < m:
-                post = float(np.mean(t[pert_idx:m] - sp[pert_idx:m]))
-        return pre, post
+    def _phase_segments(amounts):
+        """[(start_idx, end_idx_exclusive, amount), ...] — contiguous runs of
+        a constant cooling-setpoint perturbation amount."""
+        segments = []
+        if not amounts:
+            return segments
+        start, cur = 0, amounts[0]
+        for i in range(1, len(amounts)):
+            if amounts[i] != cur:
+                segments.append((start, i, cur))
+                start, cur = i, amounts[i]
+        segments.append((start, len(amounts), cur))
+        return segments
 
     def _setpoint_perturbation_info(self):
         """For every run where the cooling setpoint was actually perturbed:
-        the run's colour/label, its perturbed-setpoint series (for the
-        comfort-band overlay), and the mean indoor-temp tracking delta before
-        and after the perturbation started (vs. the setpoint actually in use
-        at each point)."""
+        the run's colour/label, its perturbed-setpoint series restricted to
+        the steps where it was actually perturbed (drawing it for the
+        untouched stretch too would just double the ordinary comfort band —
+        that's the muddy-grey overlap seen before this fix), and the mean
+        indoor-temp vs. active-setpoint tracking delta for EACH distinct
+        phase the run went through (standard / +high / -low / ...), instead
+        of one pre/post number that silently averages high and low together."""
         infos = []
         for src in self._plot_run_sources():
-            cols     = src["cols"]
+            cols    = src["cols"]
+            amounts = self._sp_amount_series(cols.get("perturbations"))
+            if not amounts or all(a == 0.0 for a in amounts):
+                continue  # setpoint never perturbed in this run
+
             sp_clean = cols.get(f"{SP_COL}_clean")
             sp_pert  = cols.get(f"{SP_COL}_pert")
-            if self._series_applied_delta(sp_clean, sp_pert) is None:
-                continue   # setpoint untouched in this run
-            idx = self._first_active_perturbation_index(cols.get("perturbations"))
-            pre, post = self._tracking_delta(
-                cols.get(f"{TEMP_COL}_clean"), sp_clean, sp_pert, idx)
-            steps = src["steps"]
-            n = min(len(steps), len(sp_pert))
+            temp     = cols.get(f"{TEMP_COL}_clean")
+            steps    = src["steps"]
+            if sp_clean is None or sp_pert is None or temp is None:
+                continue
+            n = min(len(steps), len(sp_clean), len(sp_pert), len(temp), len(amounts))
+            if n == 0:
+                continue
+            steps_a    = np.asarray(steps[:n],    dtype=float)
+            sp_clean_a = np.asarray(sp_clean[:n], dtype=float)
+            sp_pert_a  = np.asarray(sp_pert[:n],  dtype=float)
+            temp_a     = np.asarray(temp[:n],     dtype=float)
+            amounts    = amounts[:n]
+
+            phases = []
+            for start, end, amt in self._phase_segments(amounts):
+                label  = "standard" if amt == 0.0 else f"{amt:+.2f}\u00b0C"
+                sp_seg = sp_clean_a[start:end] if amt == 0.0 else sp_pert_a[start:end]
+                phases.append({"amount": amt, "label": label,
+                               "delta": float(np.mean(temp_a[start:end] - sp_seg))})
+
+            pert_mask = np.array([a != 0.0 for a in amounts])
             infos.append({
                 "color": src["color"], "label": src["label"],
-                "steps":   np.asarray(steps[:n],   dtype=float),
-                "sp_pert": np.asarray(sp_pert[:n], dtype=float),
+                "steps":   steps_a[pert_mask],
+                "sp_pert": sp_pert_a[pert_mask],
                 "band": float(getattr(self.rbc, "comfort_band", 2.0)) if self.rbc else 2.0,
-                "pre": pre, "post": post,
+                "phases": phases,
             })
         return infos
 
@@ -1366,20 +1587,18 @@ class App:
             first_marker_labeled = True
 
         # Cooling-setpoint tracking-error annotation: for every run where the
-        # setpoint was perturbed, the mean (indoor temp − setpoint in use),
-        # split into before/after the perturbation started — since the
-        # "setpoint in use" itself changes at that point. Shown regardless of
-        # which column is currently selected, stacked top-left, run-coloured.
+        # setpoint was perturbed, the mean (indoor temp − setpoint in use)
+        # for EACH distinct phase the schedule went through (standard / high
+        # / low / ...) — a single pre/post number would silently average a
+        # +3 phase and a -3 phase together and could easily land back near
+        # the "standard" value by coincidence. Shown regardless of which
+        # column is currently selected, stacked top-left, run-coloured.
         y0 = 0.98
         for info in self._setpoint_perturbation_info():
-            parts = []
-            if info["pre"] is not None:
-                parts.append(f"pre {info['pre']:+.2f}°C")
-            if info["post"] is not None:
-                parts.append(f"post {info['post']:+.2f}°C")
-            if not parts:
+            if not info["phases"]:
                 continue
-            text = f"{info['label']}: Δ temp–setpoint " + " · ".join(parts)
+            parts = [f"{ph['label']} Δ{ph['delta']:+.2f}°C" for ph in info["phases"]]
+            text = f"{info['label']}: temp−setpoint  " + " · ".join(parts)
             ax.text(0.02, y0, text, transform=ax.transAxes, fontsize=9,
                     color=info["color"], va="top", ha="left",
                     bbox=dict(boxstyle="round,pad=0.25", fc="white",
@@ -1605,6 +1824,34 @@ class App:
         self.pert_list_frame = tk.Frame(list_outer, bg=BG_CARD)
         self.pert_list_frame.pack(fill="x", padx=2, pady=2)
         self._rebuild_pert_list_ui()
+
+        # ── Auto cooling-setpoint schedule ───────────────────────────────────
+        # Splits the episode into thirds so every policy is perturbed at the
+        # same fraction of the episode, without manually timing the "Add"
+        # click the same way across 3 separate runs.
+        sched = tk.Frame(pb, bg=BG_CARD,
+                         highlightbackground="#DDDDDD", highlightthickness=1)
+        sched.pack(fill="x", padx=8, pady=(0, 10))
+        tk.Checkbutton(sched, text="Auto cooling-setpoint schedule (thirds)",
+                       variable=self.sp_schedule_var, bg=BG_CARD,
+                       font=("Helvetica", 10, "bold")) \
+            .pack(anchor="w", padx=6, pady=(6, 2))
+        lbl(sched, "1st third standard  ·  2nd third high  ·  3rd third low",
+            fg="gray", size=9).pack(anchor="w", padx=6)
+        sched_row = tk.Frame(sched, bg=BG_CARD)
+        sched_row.pack(fill="x", padx=6, pady=(4, 8))
+        lbl(sched_row, "High (2nd 3rd):", size=9).pack(side="left")
+        self.sp_schedule_high_entry = tk.Entry(
+            sched_row, font=("Helvetica", 11), width=6,
+            relief="solid", bd=1, justify="center")
+        self.sp_schedule_high_entry.insert(0, "3.00")
+        self.sp_schedule_high_entry.pack(side="left", padx=(4, 12))
+        lbl(sched_row, "Low (3rd 3rd):", size=9).pack(side="left")
+        self.sp_schedule_low_entry = tk.Entry(
+            sched_row, font=("Helvetica", 11), width=6,
+            relief="solid", bd=1, justify="center")
+        self.sp_schedule_low_entry.insert(0, "-3.00")
+        self.sp_schedule_low_entry.pack(side="left", padx=(4, 0))
 
         # ── Simulation ────────────────────────────────────────────────────────
         sim = group("Simulation", 3, (8, 0))
