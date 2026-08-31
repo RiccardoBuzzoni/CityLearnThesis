@@ -156,7 +156,7 @@ SIM_OBS_PERT  = [f"{n}_pert"  for n in OBS_NAMES]
 SIM_ACT_CLEAN = [f"{a}_clean" for a in ACTION_NAMES]
 SIM_ACT_PERT  = [f"{a}_pert"  for a in ACTION_NAMES]
 SIM_ACT_DELTA = [f"{a}_delta" for a in ACTION_NAMES]
-SIM_META_COLS = ["perturbations"]   
+SIM_META_COLS = ["perturbations", "cooling_setpoint_delta"]
 
 SIM_ALL_COLS = (
     ["step", "policy", "reward"] +
@@ -847,7 +847,7 @@ class App:
         else:
             self.session_lbl.config(text="No active session.", fg="gray")
 
-    def _write_sim_row(self, reward, c_actions, p_actions, c_obs, p_obs):
+    def _write_sim_row(self, reward, c_actions, p_actions, c_obs, p_obs, cooling_setpoint_delta):
         if self._sim_writer is None or self._sim_file is None:
             return
         import json
@@ -856,6 +856,7 @@ class App:
             "policy":       self.policy_var.get(),
             "reward":       round(float(reward), 6),
             "perturbations": json.dumps(self.pert_list),
+            "cooling_setpoint_delta": round(float(cooling_setpoint_delta), 6),
         }
         for n in OBS_NAMES:
             row[f"{n}_clean"] = round(float(c_obs.get(n, 0.0)), 6)
@@ -949,7 +950,12 @@ class App:
                     log(self.console,
                         f"  ! {dev} clean={c[dev]:.3f} "
                         f"perturbed={p[dev]:.3f} D={d:.3f}")
-            self._write_sim_row(reward[0], c, p, c_obs, p_obs)
+
+            temp = self.obs_dict_corrected["indoor_dry_bulb_temperature"]
+            setpoint = p_obs["indoor_dry_bulb_temperature_cooling_set_point"]
+            cooling_setpoint_delta = temp - setpoint
+                    
+            self._write_sim_row(reward[0], c, p, c_obs, p_obs, cooling_setpoint_delta)
             self.update_obs(); self.refresh()
             if self.live_plot_var.get():
                 self._draw_unified_plot(quiet=True)
