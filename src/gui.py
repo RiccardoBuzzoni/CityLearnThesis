@@ -528,6 +528,11 @@ class App:
 
         self.env    = None; self.rbc = None
         self.obs    = None; self.obs_dict = {}
+        # Maps a cooling-setpoint perturbation VALUE (e.g. +3.0, -3.0) to a
+        # fixed legend/marker colour, assigned in first-seen order and kept
+        # stable across replots so "+3.00°C" is always the same colour
+        # everywhere on screen, in every run, for the rest of this session.
+        self._phase_color_cache: dict = {}
         # Physically-accurate post-dynamics indoor_temp/SOC, kept separate
         # from obs_dict on purpose — see compute()'s docstring.
         self.obs_dict_corrected: dict = {}
@@ -1309,33 +1314,35 @@ class App:
                 yield {"steps": steps, "cols": run["cols"],
                        "color": run["color"], "label": run["label"]}
 
-    @staticmethod
-    def _perturbation_change_indices(pert_col):
-        """Indices where the *content* of the 'perturbations' meta-column
-        changes from the previous step — i.e. every point a perturbation
-        started, stopped, or changed amount. Catches every phase boundary of
-        a multi-phase schedule (e.g. standard -> +3 -> -3), not just the
-        first "off -> on" transition."""
-        if not pert_col:
-            return []
-        idxs = []
-        prev = None
-        for i, raw in enumerate(pert_col):
-            s    = str(raw).strip() if raw is not None else ""
-            norm = "" if s in ("[]", "nan", "None", "null", "") else s
-            if i > 0 and norm != prev:
-                idxs.append(i)
-            prev = norm
-        return idxs
+    _PHASE_COLOR_PALETTE = ["#D62728", "#1F77B4", "#9467BD",
+                             "#FF7F0E", "#17BECF", "#8C564B"]
+
+    def _phase_color(self, amount: float) -> str:
+        """Stable colour for a given cooling-setpoint perturbation VALUE
+        (not per-run) — assigned in first-seen order from a fixed palette
+        and cached for the rest of the session, so e.g. every '+3.00°C'
+        transition line, in every run, always reads as the same colour."""
+        key = round(float(amount), 4)
+        if key not in self._phase_color_cache:
+            idx = len(self._phase_color_cache) % len(self._PHASE_COLOR_PALETTE)
+            self._phase_color_cache[key] = self._PHASE_COLOR_PALETTE[idx]
+        return self._phase_color_cache[key]
 
     def _perturbation_markers(self):
-        """(step, color) pairs marking, for every run currently drawn on the
-        plot, every timestep at which the active perturbation(s) changed —
-        started, stopped, or switched to a different amount."""
+        """(step, color, label) triples: every point a run's cooling-setpoint
+        perturbation changed to a new value (standard -> +3, +3 -> -3, ...).
+        Colour-coded by the VALUE transitioned TO (via _phase_color), not by
+        run, so the same perturbation level reads as the same colour across
+        every run on the plot; labelled with that value for the legend."""
         markers = []
         for src in self._plot_run_sources():
-            for idx in self._perturbation_change_indices(src["cols"].get("perturbations")):
-                markers.append((src["steps"][idx], src["color"]))
+            amounts = self._sp_amount_series(src["cols"].get("perturbations"))
+            steps   = src["steps"]
+            for start, _, amt in self._phase_segments(amounts)[1:]:
+                if start >= len(steps):
+                    continue
+                label = "back to standard" if amt == 0.0 else f"perturbation \u2192 {amt:+.2f}\u00b0C"
+                markers.append((steps[start], self._phase_color(amt), label))
         return markers
 
     @staticmethod
@@ -1497,7 +1504,8 @@ class App:
                 ax.fill_between(info["steps"],
                                  info["sp_pert"] + info["band"],
                                  info["sp_pert"] - info["band"],
-                                 color=info["color"], alpha=0.12, zorder=0)
+                                 color=info["color"], alpha=0.12, zorder=0,
+                                 label=f"{info['label']} comfort band (post-perturbation)")
                 ax.plot(info["steps"], info["sp_pert"], "--",
                         color=info["color"], linewidth=1.2, alpha=0.9,
                         label=f"{info['label']} setpoint (perturbed)", zorder=1)
@@ -1575,16 +1583,19 @@ class App:
                 ax.plot(cur_steps[-1], cur_vals[-1], "o",
                         color=cur_color, markersize=5)
 
-        # Vertical marker(s): the timestep at which a perturbation first
-        # became active, one per run currently on the plot (own run colour).
-        # Only the first line carries a legend label, so overlapping runs
-        # don't spam the legend with repeated entries.
-        first_marker_labeled = False
-        for step_val, color in self._perturbation_markers():
+        # Vertical marker(s): every timestep a run's cooling-setpoint
+        # perturbation changed value, colour-coded and legend-labelled by
+        # the VALUE transitioned to (e.g. "perturbation → +3.00°C"), so the
+        # tutor's ask — distinguishing "perturbation to value1" from
+        # "perturbation to value2" — is visible directly in the legend.
+        # Each distinct label appears only once in the legend even if
+        # several runs share the same transition.
+        seen_marker_labels = set()
+        for step_val, color, label in self._perturbation_markers():
             ax.axvline(step_val, color=color, linestyle=":", linewidth=1.6,
                        alpha=0.85, zorder=2,
-                       label=None if first_marker_labeled else "perturbation introduced")
-            first_marker_labeled = True
+                       label=None if label in seen_marker_labels else label)
+            seen_marker_labels.add(label)
 
         # Cooling-setpoint tracking-error annotation: for every run where the
         # setpoint was perturbed, the mean (indoor temp − setpoint in use)
@@ -1614,7 +1625,8 @@ class App:
             ax.set_ylabel("")
         ax.set_xlabel("timestep", fontsize=12, labelpad=6)
         ax.tick_params(labelsize=11)
-        ax.legend(fontsize=11, loc="upper right")
+        ax.legend(fontsize=9.5, loc="upper right", ncol=2,
+                  columnspacing=1.0, handletextpad=0.6, labelspacing=0.4)
         ax.set_facecolor("#FAFAFA")
         for s in ax.spines.values():
             s.set_edgecolor("#DDDDDD")
