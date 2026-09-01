@@ -242,3 +242,50 @@ explicit. Kept as a reference for whenever a new per-building state variable nee
 be read correctly after a step. See [Diagnostics](#diagnostics) above.
 
 ---
+
+## Final Robustness Test — Cooling Setpoint Perturbation
+ 
+The last stage of the pipeline evaluates which controller adapts best when the
+`cooling_device` target is shifted away from the range it was designed/trained
+around, using the GUI's automated cooling-setpoint schedule (three phases per
+episode: standard, then perturbed +X°C, then perturbed −X°C, split by episode
+thirds).
+ 
+**Test description**
+
+Each policy is run for a full episode with the setpoint schedule active:
+ 
+- **AdvancedRBC**: 1 run (deterministic — no seed dependence).
+- **LinearRegressor**: 3 runs, one per random seed.
+- **RL agent (Omnisafe PPOLag)**: 3 runs, one per random seed.
+Each run is saved as a CSV under `data/simulations/` (`pert_setpoint_<policy>[_seed_<N>].csv`),
+including a per-timestep `cooling_setpoint_delta` column (indoor temperature minus
+whichever setpoint — standard or perturbed — is actually in effect at that step).
+
+![Perturbation test example](material/test_example.png)
+
+**Expected results**
+ 
+A policy that adapts well to the shifted target should keep the mean deviation
+between indoor temperature and the setpoint *currently in use* close to its
+standard-phase value across all three phases — cooling less when the setpoint is
+raised, more when it's lowered. A policy that instead keeps tracking the
+*original* setpoint (or worse, responds in the wrong direction) will show a much
+larger mean delta in the perturbed phases than in the standard phase. Comparing
+the three phase-wise means (plus the overall episode mean) across all 7 runs is
+what the summary table below is designed to make visible at a glance.
+
+**Summary table**
+ 
+Generated with `src/make_delta_table.py` from the 7 run CSVs, one row per
+policy/seed and one column per schedule phase plus the overall mean:
+ 
+```console
+python make_delta_table.py ../data/simulations/
+```
+ 
+produces `data/simulations/delta_summary_table.csv`:
+
+![Delta summary table](material/delta_summary_table.png)
+
+---
