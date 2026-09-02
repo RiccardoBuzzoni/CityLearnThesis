@@ -1485,41 +1485,133 @@ class App:
         # clean/perturbed obs pairs, never for the single reward series.
         deviation = bool(self.deviation_var.get()) and not is_reward
 
-        # Comfort band shading, mirroring evaluate.py's plot_cooling_device.
-        # The setpoint is exogenous (it doesn't depend on which policy is
-        # running), so whichever source is available — static baseline or
-        # live/sim session — is used as-is; drawn first so the temperature
-        # lines sit on top of it.
+        # Comfort band and cooling setpoint:
+        # show the standard setpoint/band only during the first phase.
+        # During perturbed phases, only the perturbed setpoint and its
+        # corresponding comfort band are shown.
         if col == "indoor_dry_bulb_temperature" and not deviation:
             band_steps, band_sp, band = self._get_setpoint_and_band()
+
+            # Find the end of the standard phase from the actual
+            # perturbation schedule.
+            standard_end = None
+
+            if self._session_open and self._live_cols.get("perturbations"):
+                perturbation_data = self._live_cols["perturbations"]
+            elif self.sim_df is not None and "perturbations" in self.sim_df.columns:
+                perturbation_data = self.sim_df["perturbations"].tolist()
+            else:
+                perturbation_data = None
+
+            if perturbation_data is not None:
+                amounts = self._sp_amount_series(perturbation_data)
+                segments = self._phase_segments(amounts)
+
+                if len(segments) > 1:
+                    standard_end = segments[0][1]
+
             if (band_steps is not None
                     and band_sp is not None
                     and band is not None):
-                ax.fill_between(band_steps, band_sp + band, band_sp - band,
-                                color="green", alpha=0.15,
-                                label="Comfort band", zorder=0)
-                
-                ax.plot(band_steps, band_sp, "--",
-                        color="gray", linewidth=1.2,
-                        label="Cooling setpoint", zorder=1)
 
-            # Perturbed setpoint + its own comfort band, one per run where the
-            # setpoint was actually perturbed, in that run's colour so it's
-            # traceable back to the corresponding temperature/action curves.
+                if standard_end is not None:
+                    # Standard comfort band + setpoint ONLY in phase 1.
+                    ax.fill_between(
+                        band_steps[:standard_end],
+                        band_sp[:standard_end] + band,
+                        band_sp[:standard_end] - band,
+                        color="green",
+                        alpha=0.15,
+                        label="Comfort band",
+                        zorder=0
+                    )
+
+                    ax.plot(
+                        band_steps[:standard_end],
+                        band_sp[:standard_end],
+                        "--",
+                        color="gray",
+                        linewidth=1.2,
+                        label="Cooling setpoint",
+                        zorder=1
+                    )
+                else:
+                    # No perturbation information: preserve normal behaviour.
+                    ax.fill_between(
+                        band_steps,
+                        band_sp + band,
+                        band_sp - band,
+                        color="green",
+                        alpha=0.15,
+                        label="Comfort band",
+                        zorder=0
+                    )
+
+                    ax.plot(
+                        band_steps,
+                        band_sp,
+                        "--",
+                        color="gray",
+                        linewidth=1.2,
+                        label="Cooling setpoint",
+                        zorder=1
+                    )
+
+            # Perturbed setpoint + corresponding comfort band.
+            # These are already restricted to perturbed timesteps.
             for info in self._setpoint_perturbation_info():
-                ax.fill_between(info["steps"],
-                                 info["sp_pert"] + info["band"],
-                                 info["sp_pert"] - info["band"],
-                                 color=info["color"], alpha=0.12, zorder=0,
-                                 label=f"{info['label']} comfort band (post-perturbation)")
-                ax.plot(info["steps"], info["sp_pert"], "--",
-                        color=info["color"], linewidth=1.2, alpha=0.9,
-                        label=f"{info['label']} setpoint (perturbed)", zorder=1)
+                ax.fill_between(
+                    info["steps"],
+                    info["sp_pert"] + info["band"],
+                    info["sp_pert"] - info["band"],
+                    color=info["color"],
+                    alpha=0.12,
+                    zorder=0,
+                    label=f"{info['label']} comfort band (post-perturbation)"
+                )
 
+                ax.plot(
+                    info["steps"],
+                    info["sp_pert"],
+                    "--",
+                    color=info["color"],
+                    linewidth=1.2,
+                    alpha=0.9,
+                    label=f"{info['label']} setpoint (perturbed)",
+                    zorder=1
+                )
+
+        # Baseline:
+        # for indoor temperature, show it only during the standard phase.
         if baseline_series is not None and not deviation:
-            ax.plot(np.arange(len(baseline_series)), baseline_series,
-                    color=BLUE, linewidth=1.4,
-                    label=f"{disp} (baseline)", alpha=0.9)
+            baseline_steps = np.arange(len(baseline_series))
+            baseline_values = baseline_series
+
+            if col == "indoor_dry_bulb_temperature":
+                if self._session_open and self._live_cols.get("perturbations"):
+                    perturbation_data = self._live_cols["perturbations"]
+                elif self.sim_df is not None and "perturbations" in self.sim_df.columns:
+                    perturbation_data = self.sim_df["perturbations"].tolist()
+                else:
+                    perturbation_data = None
+
+                if perturbation_data is not None:
+                    amounts = self._sp_amount_series(perturbation_data)
+                    segments = self._phase_segments(amounts)
+
+                    if len(segments) > 1:
+                        standard_end = segments[0][1]
+                        baseline_steps = baseline_steps[:standard_end]
+                        baseline_values = baseline_values[:standard_end]
+
+            ax.plot(
+                baseline_steps,
+                baseline_values,
+                color=BLUE,
+                linewidth=1.4,
+                label=f"{disp} (baseline)",
+                alpha=0.9
+            )
 
         if deviation:
             # The clean (unperturbed) curve is the reference: Δ = 0.
