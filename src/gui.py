@@ -1,3 +1,14 @@
+"""Policy Sandbox graphical interface.
+
+This module provides a Tkinter-based GUI for running and comparing control
+policies in a CityLearn environment. It supports the RBC controller, a trained
+linear-regression policy, and a trained reinforcement-learning policy, together
+with configurable observation and action perturbations.
+
+The application can load baseline and simulation CSV files, record simulation
+sessions, and render unified plots for comparing clean and perturbed behavior.
+"""
+
 import sys, os
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,7 +43,7 @@ import pandas as pd
 import numpy as np
 import torch
 
-# Colours
+# Colors
 BG_APP       = "#ECECEC"
 BG_CARD      = "#FFFFFF"
 BLUE         = "#007AFF"
@@ -44,9 +55,9 @@ ORANGE_LIGHT = "#FFF4E0"
 PURPLE       = "#AF52DE"   # perturbed curve (run 1)
 GRAY         = "#E5E5EA"
 
-# Palette used to colour each perturbed simulation run. The first run keeps
-# PURPLE (the historical single-run colour); every following run cycles to the
-# next colour so already-finished runs stay visible while a new one is drawn
+# Palette used to color each perturbed simulation run. The first run keeps
+# PURPLE (the historical single-run color); every following run cycles to the
+# next color so already-finished runs stay visible while a new one is drawn
 # on top. Run 2 is the dark green requested for side-by-side comparison.
 RUN_COLORS = [
     "#AF52DE",   # purple      – run 1
@@ -59,7 +70,15 @@ RUN_COLORS = [
 
 
 def run_color(idx):
-    """Colour for the perturbed curve of run #idx (0-based), cycling if needed."""
+    """Return the display color assigned to a perturbed simulation run.
+
+    Args:
+        idx: Zero-based simulation-run index.
+
+    Returns:
+        A color from ``RUN_COLORS``; the palette is reused cyclically when
+        more runs are plotted than there are predefined colors.
+    """
     return RUN_COLORS[idx % len(RUN_COLORS)]
 
 OBS_NAMES = [
@@ -289,9 +308,10 @@ class NeuralPolicy:
 
 # ── RL Policy ──────────────────────────────────────────────────────────────────
 class RLPolicy:
-    """
-    Wrapper for loading and executing a trained Reinforcement Learning (RL) policy.
-    Supports Omnisafe / PyTorch TorchScript policy actors.
+    """Load and execute a trained reinforcement-learning policy.
+
+    The wrapper supports TorchScript actors and reproduces the deterministic
+    preprocessing and action-generation pipeline used by the RL workflow.
     """
     def __init__(self):
         self.ready: bool = False
@@ -306,14 +326,21 @@ class RLPolicy:
         self._action_space = None
 
     def load(self, model_path: str, env=None) -> tuple[bool, str]:
-        """
-        Loads the RL TorchScript actor model from disk.
+        """Load the RL actor from a TorchScript or PyTorch checkpoint.
+
+        Args:
+            model_path: Path to the saved actor checkpoint.
+            env: Optional CityLearn environment used to construct the
+                observation normalizer and obtain the action space.
+
+        Returns:
+            ``(success, message)`` describing the loading result.
         """
         if not os.path.exists(model_path):
             return False, f"RL model file not found: {model_path}"
         try:
             import torch
-            # Carica il modello usando torch.jit.load per TorchScript
+            # Prefer torch.jit.load for TorchScript checkpoints.
             try:
                 self.actor = torch.jit.load(model_path, map_location="cpu")
             except Exception:
@@ -335,9 +362,14 @@ class RLPolicy:
             return False, f"Loading error (RL): {e}"
 
     def _rescale(self, action: np.ndarray) -> np.ndarray:
-        """
-        Rescale dell'output della policy da [-1, 1]
-        ai limiti fisici reali dell'action space di CityLearn.
+        """Rescale policy output from ``[-1, 1]`` to CityLearn action bounds.
+
+        Args:
+            action: Action values produced by the policy in normalized
+                ``[-1, 1]`` coordinates.
+
+        Returns:
+            A ``float32`` NumPy array expressed in physical action units.
         """
         if self._action_space is None:
             raise RuntimeError("RL action space is not loaded.")
@@ -372,19 +404,19 @@ class RLPolicy:
     }
 
     def _normalized_values_with_overrides(self, overrides: dict) -> list:
-        """
-        Returns the correctly-normalized observation vector (same order as
-        self._normalizer.env.observation_names[0]) reflecting `overrides`
-        {obs_name: perturbed_value}.
+        """Build a normalized observation vector with temporary overrides.
 
-        Needed because CityLearn's NormalizedObservationWrapper.observation()
-        ignores whatever you pass it and always re-reads the live building
-        state (see predict()'s docstring) — so the only way to get the
-        REAL normalization pipeline to reflect a perturbed value is to
-        write it into the building's own array for one instant, read the
-        result back out, and immediately restore the true value. The
-        restore happens in `finally` so a mid-call exception can never
-        leave the live simulation state corrupted.
+        CityLearn's observation wrapper re-reads the live building state rather
+        than using the raw values supplied by the caller. This method therefore
+        applies each override directly to the relevant state array, runs the
+        real CityLearn normalization pipeline, and restores the original values
+        in a ``finally`` block.
+
+        Args:
+            overrides: Mapping from observation names to perturbed values.
+
+        Returns:
+            The normalized observation vector in environment observation order.
         """
         assert self._normalizer is not None  # predict() already guarantees this
         building = self._normalizer.env.unwrapped.buildings[0]
@@ -406,24 +438,23 @@ class RLPolicy:
                 getattr(getattr(building, holder_name), arr_name)[t] = original
 
     def predict(self, obs_dict: dict, overrides: dict | None = None) -> dict[str, float]:
-        """
-        Predicts actions using the loaded RL policy given the current observation dict.
+        """Predict actions for the current observation.
 
-        Usa la stessa pipeline di rl_agent.py:
-            raw obs
-            -> normalizzazione
-            -> actor
-            -> mean/log_std
-            -> tanh(mean)
-            -> rescale [-1, 1] verso action space CityLearn
+        The deterministic inference pipeline mirrors the RL agent workflow:
+        raw observations -> normalization -> actor -> mean -> tanh ->
+        action-space rescaling.
 
-        `overrides`: {obs_name: perturbed_value} for the observation-level
-        perturbations currently active (from compute()). Needed because
-        CityLearn's NormalizedObservationWrapper.observation() ignores the
-        raw observation list you pass it and always re-reads the live,
-        UNPERTURBED building state instead — so without this, the RL policy
-        never sees any obs-level perturbation regardless of what obs_dict
-        contains. See _normalized_values_with_overrides()'s docstring.
+        Args:
+            obs_dict: Current observation values keyed by CityLearn name.
+            overrides: Optional observation overrides for active perturbations.
+                These are required because the CityLearn observation wrapper
+                re-reads the live building state.
+
+        Returns:
+            A mapping from CityLearn action names to bounded action values.
+
+        Raises:
+            RuntimeError: If the actor, normalizer, or action space is not ready.
         """
         if (
             not self.ready
@@ -438,7 +469,7 @@ class RLPolicy:
         if overrides:
             norm_values = self._normalized_values_with_overrides(overrides)
         else:
-            # Stesso ordine delle osservazioni dell'environment
+            # Use the same observation order as the environment.
             obs_names = self._normalizer.env.observation_names[0]
             raw_obs_list = [[
                 float(obs_dict.get(name, 0.0))
@@ -449,34 +480,34 @@ class RLPolicy:
             # be overridden for the clean/unperturbed call.
             norm_values = self._normalizer.observation(raw_obs_list)[0]
 
-        # 2. Tensor senza dimensione batch aggiuntiva
+        # 2. Create a tensor without an additional batch dimension.
         obs_t = torch.as_tensor(
             norm_values,
             dtype=torch.float32
         )
 
-        # 3. Forward dell'attore
+        # 3. Run the actor forward pass.
         with torch.no_grad():
             output = self.actor(obs_t)
 
-        # 4. Stessa logica di rl_agent.py
+        # 4. Follow the same inference logic as rl_agent.py.
         mean, log_std = output.chunk(2, dim=-1)
 
-        # Non influenza l'azione deterministica, ma mantiene
-        # la stessa pipeline del wrapper originale
+        # This does not affect deterministic inference, but keeps the same
+        # pipeline as the original wrapper.
         log_std = torch.clamp(
             log_std,
             min=-20.0,
             max=2.0
         )
 
-        # 5. Output dell'attore in [-1, 1]
+        # 5. Convert the actor output to the normalized [-1, 1] range.
         action = torch.tanh(mean).detach().cpu().numpy()
 
-        # 6. Rescaling ai limiti fisici di CityLearn
+        # 6. Rescale actions to the physical CityLearn bounds.
         action = self._rescale(action)
 
-        # 7. Associa le azioni al loro vero ordine nell'environment
+        # 7. Map actions to the environment's expected action order.
         env_action_names = self._normalizer.env.action_names[0]
 
         actions = {}
@@ -529,8 +560,8 @@ class App:
         self.env    = None; self.rbc = None
         self.obs    = None; self.obs_dict = {}
         # Maps a cooling-setpoint perturbation VALUE (e.g. +3.0, -3.0) to a
-        # fixed legend/marker colour, assigned in first-seen order and kept
-        # stable across replots so "+3.00°C" is always the same colour
+        # fixed legend/marker color, assigned in first-seen order and kept
+        # stable across replots so "+3.00°C" is always the same color
         # everywhere on screen, in every run, for the rest of this session.
         self._phase_color_cache: dict = {}
         # Physically-accurate post-dynamics indoor_temp/SOC, kept separate
@@ -625,7 +656,7 @@ class App:
             log(self.console, f"Init error: {e}")
 
     def reset_env(self):
-        """Reset closes the current session (if any) then resets the env."""
+        """Stop the current run, close its session, and reset the environment."""
         # Fully stop any in-flight run loop FIRST, otherwise the queued loop()
         # keeps stepping the freshly-reset env (a "ghost" run) and leaves
         # running=True, which makes the next Start a no-op ("Already running").
@@ -648,10 +679,13 @@ class App:
             log(self.console, f"Reset error: {e}")
 
     def store(self, obs, corrected_override=None):
-        """corrected_override: optional {name: value} of physically-accurate
-        post-dynamics values (indoor_temp/SOC) for CSV logging and the UI
-        panel ONLY. self.obs_dict — what actually feeds predict() — always
-        comes straight from the raw `obs` CityLearn returned, unmodified."""
+        """Store the latest observation and display-only corrected values.
+
+        ``self.obs_dict`` preserves the raw CityLearn observation used for
+        policy inference. ``corrected_override`` may provide physically accurate
+        post-dynamics values for indoor temperature and storage SOC; these are
+        stored separately for CSV logging and UI display.
+        """
         self.obs   = obs
         if self.rbc is None:
             log(self.console, "Error: RBC not initialised.")
@@ -774,7 +808,7 @@ class App:
 
     # ── Session / CSV Logging ─────────────────────────────────────────────────
     def _open_session(self):
-        """Opens a new CSV session. No-op if session already open."""
+        """Open a new CSV recording session unless one is already active."""
         if self._session_open:
             return
         ts     = datetime.now().strftime("%d%m%Y_%H%M")
@@ -801,7 +835,7 @@ class App:
         self._update_session_label()
 
     def _close_session(self):
-        """Closes and saves the current CSV session."""
+        """Close the active CSV session and archive it for plotting."""
         if not self._session_open:
             return
         if self._sim_file:
@@ -809,7 +843,7 @@ class App:
             self._sim_file   = None
             self._sim_writer = None
         self._session_open = False
-        # Freeze this run's perturbed curve on the plot (in its own colour) so
+        # Freeze this run's perturbed curve on the plot (in its own color) so
         # the next run can be compared against it. Runs that finish for ANY
         # reason pass through here (Reset, episode end, crash, app close), so
         # the comparison history is built up consistently.
@@ -819,8 +853,11 @@ class App:
         self._update_session_label()
 
     def _archive_current_run(self):
-        """Snapshot the just-finished run so its perturbed curve stays on the
-        plot. No-op unless the run had perturbations and at least one step."""
+        """Archive the current run for persistent comparison on the plot.
+
+        The snapshot is created only when the run has at least one simulation
+        step and at least one active perturbation.
+        """
         steps = self._live_cols.get("step") if self._live_cols else None
         if not steps or not self.pert_list:
             return
@@ -1006,7 +1043,7 @@ class App:
         self._loop_after_id = self.root.after(400, self.loop)
 
     def _cancel_loop(self):
-        """Cancel a pending run-loop callback, if any."""
+        """Cancel the pending Tkinter callback responsible for the run loop."""
         if self._loop_after_id is not None:
             try:
                 self.root.after_cancel(self._loop_after_id)
@@ -1015,7 +1052,7 @@ class App:
             self._loop_after_id = None
 
     def stop(self):
-        """Pause: stops the loop but keeps the session (CSV) open."""
+        """Pause the simulation while keeping the current CSV session open."""
         self.stop_req = True
         self.running  = False
         self._cancel_loop()
@@ -1038,7 +1075,7 @@ class App:
                 log(self.console, f"[Neural] {msg}")
                 break
 
-        # 2. Auto-load RL model (file unico sovrascritto)
+        # 2. Auto-load the RL model from the single checkpoint file.
         rl_path = os.path.normpath(os.path.join(script_dir, "../results/rl_model/actor.pt"))
         if os.path.exists(rl_path):
             ok, msg = self.rl.load(rl_path, env=self.env)
@@ -1090,16 +1127,21 @@ class App:
         self._draw_unified_plot(quiet=True)
 
     def _normalize_baseline_df(self, df):
-        """Validate that `df` is a *complete* baseline dataset and return
-        ``(normalized_df, label)`` whose columns are the internal observation
-        names, or ``(None, error_message)`` if it is not usable.
+        """Validate and normalize a complete baseline dataset.
 
-        Two formats are accepted:
-          * RBC / dataset export – one column per observation, named via
-            ``CL_TO_CSV`` (e.g. ``indoor_temp``) or by its raw CityLearn name.
-          * Simulation export – ``<obs>_clean`` / ``<obs>_pert`` for every
-            observation (the user picks which series to use as baseline).
-        A dataset is "complete" only if *all* observations resolve.
+        Two input formats are accepted:
+
+        * **RBC/dataset export:** one column per observation, using either the
+          names defined by ``CL_TO_CSV`` or the original CityLearn names.
+        * **Simulation export:** both ``<obs>_clean`` and ``<obs>_pert`` must
+          exist for every observation; the user chooses the baseline series.
+
+        Args:
+            df: DataFrame loaded from a baseline or simulation CSV file.
+
+        Returns:
+            ``(normalized_df, label)`` when all required observations are
+            available, otherwise ``(None, error_message)``.
         """
         if len(df) == 0:
             return None, "il file non contiene righe"
@@ -1324,10 +1366,10 @@ class App:
                              "#FF7F0E", "#17BECF", "#8C564B"]
 
     def _phase_color(self, amount: float) -> str:
-        """Stable colour for a given cooling-setpoint perturbation VALUE
+        """Stable color for a given cooling-setpoint perturbation VALUE
         (not per-run) — assigned in first-seen order from a fixed palette
         and cached for the rest of the session, so e.g. every '+3.00°C'
-        transition line, in every run, always reads as the same colour."""
+        transition line, in every run, always reads as the same color."""
         key = round(float(amount), 4)
         if key not in self._phase_color_cache:
             idx = len(self._phase_color_cache) % len(self._PHASE_COLOR_PALETTE)
@@ -1338,7 +1380,7 @@ class App:
         """(step, color, label) triples: every point a run's cooling-setpoint
         perturbation changed to a new value (standard -> +3, +3 -> -3, ...).
         Colour-coded by the VALUE transitioned TO (via _phase_color), not by
-        run, so the same perturbation level reads as the same colour across
+        run, so the same perturbation level reads as the same color across
         every run on the plot; labelled with that value for the legend."""
         markers = []
         for src in self._plot_run_sources():
@@ -1390,7 +1432,7 @@ class App:
 
     def _setpoint_perturbation_info(self):
         """For every run where the cooling setpoint was actually perturbed:
-        the run's colour/label, its perturbed-setpoint series restricted to
+        the run's color/label, its perturbed-setpoint series restricted to
         the steps where it was actually perturbed (drawing it for the
         untouched stretch too would just double the ordinary comfort band —
         that's the muddy-grey overlap seen before this fix), and the mean
@@ -1625,7 +1667,7 @@ class App:
                 ax.plot(clean_steps[-1], clean_series[-1], "o",
                         color=ORANGE, markersize=5)
 
-        # Already-finished perturbed runs, frozen in their own colours so the
+        # Already-finished perturbed runs, frozen in their own colors so the
         # current run can be compared against them. In deviation view each run
         # is drawn as (perturbed − clean) of that run.
         if not is_reward:
@@ -1649,7 +1691,7 @@ class App:
                         linestyle="--", alpha=0.9, label=run["label"])
 
         # Current perturbed curve. Live: the run in progress, drawn in its own
-        # run colour (run #N+1 after N archived runs) so it is distinct from the
+        # run color (run #N+1 after N archived runs) so it is distinct from the
         # frozen ones. Not live: only an externally loaded sim file reaches here
         # — a just-closed session is already shown via _archived_runs above.
         draw_current_pert = (show_pert and pert_series is not None
@@ -1682,7 +1724,7 @@ class App:
                         color=cur_color, markersize=5)
 
         # Vertical marker(s): every timestep a run's cooling-setpoint
-        # perturbation changed value, colour-coded and legend-labelled by
+        # perturbation changed value, color-coded and legend-labelled by
         # the VALUE transitioned to (e.g. "perturbation → +3.00°C"), so the
         # tutor's ask — distinguishing "perturbation to value1" from
         # "perturbation to value2" — is visible directly in the legend.
@@ -1701,7 +1743,7 @@ class App:
         # / low / ...) — a single pre/post number would silently average a
         # +3 phase and a -3 phase together and could easily land back near
         # the "standard" value by coincidence. Shown regardless of which
-        # column is currently selected, stacked top-left, run-coloured.
+        # column is currently selected, stacked top-left, run-colored.
         y0 = 0.98
         for info in self._setpoint_perturbation_info():
             if not info["phases"]:
@@ -2035,86 +2077,6 @@ class App:
                             (ORANGE, "0.05-0.20 sens."),
                             (RED, ">0.20 fragile")]:
             lbl(leg, text, fg=color, size=10).pack(anchor="w", pady=1)
-
-    # ── DISABLED in the navbar layout — kept for later (see build()) ──────────
-    # "Action comparison" panel: clean vs perturbed action table + legend.
-    # def build_center(self, parent):
-    #     _, inner = card(parent, "Action comparison", col=1, row=0, padx=(6, 6))
-    #     tbl = tk.Frame(inner, bg=BG_CARD)
-    #     tbl.pack(fill="both", expand=True)
-    #     for c in range(4): tbl.columnconfigure(c, weight=1)
-    #
-    #     for col, (h, bg, fg) in enumerate([
-    #         ("Device",          BG_CARD,      "gray"),
-    #         ("Clean input",     BLUE_LIGHT,   BLUE),
-    #         ("Perturbed input", ORANGE_LIGHT, ORANGE),
-    #         ("Difference",      BG_CARD,      "gray"),
-    #     ]):
-    #         tk.Label(tbl, text=h, bg=bg, fg=fg,
-    #                  font=("Helvetica", 12, "bold"),
-    #                  anchor="center", pady=10) \
-    #             .grid(row=0, column=col, sticky="ew", padx=(0, 4), pady=(0, 8))
-    #
-    #     for row, dev in enumerate(ACTION_NAMES, start=1):
-    #         lbl(tbl, dev, bold=True, size=12, padx=10) \
-    #             .grid(row=row, column=0, sticky="ew",
-    #                   padx=(0, 4), pady=(0, 4), ipady=5)
-    #         cl = tk.Label(tbl, text="0.000", bg=BLUE_LIGHT, fg=BLUE,
-    #                       font=("Helvetica", 22, "bold"),
-    #                       anchor="center", pady=20)
-    #         cl.grid(row=row, column=1, sticky="ew", padx=(0, 4), pady=(0, 8))
-    #         self.clean_lbl[dev] = cl
-    #         pl = tk.Label(tbl, text="0.000", bg=ORANGE_LIGHT, fg=ORANGE,
-    #                       font=("Helvetica", 22, "bold"),
-    #                       anchor="center", pady=20)
-    #         pl.grid(row=row, column=2, sticky="ew", padx=(0, 4), pady=(0, 8))
-    #         self.pert_lbl[dev] = pl
-    #         dl = tk.Label(tbl, text="D 0.000", bg=BG_CARD, fg=GREEN,
-    #                       font=("Helvetica", 16, "bold"),
-    #                       anchor="center", pady=20)
-    #         dl.grid(row=row, column=3, sticky="ew", padx=(0, 4), pady=(0, 8))
-    #         self.diff_lbl[dev] = dl
-    #
-    #     leg = tk.Frame(inner, bg=BG_CARD)
-    #     leg.pack(fill="x", pady=(12, 0))
-    #     for color, label, desc in [
-    #         (GREEN,  "D < 0.05",    "robust"),
-    #         (ORANGE, "D 0.05-0.20", "sensitive"),
-    #         (RED,    "D > 0.20",    "fragile"),
-    #     ]:
-    #         lbl(leg, label, fg=color, bold=True, size=11) \
-    #             .pack(side="left", padx=(0, 4))
-    #         lbl(leg, desc, fg="gray", size=11) \
-    #             .pack(side="left", padx=(0, 20))
-
-    # ── DISABLED in the navbar layout — kept for later (see build()) ──────────
-    # "Current observations" panel + "Console" text widget.
-    # def build_right(self, parent):
-    #     outer, inner = card(parent, "Current observations", col=2, row=0, padx=(0, 0))
-    #     outer.rowconfigure(1, weight=1)
-    #     inner.rowconfigure(1, weight=1)
-    #     inner.columnconfigure(0, weight=1)
-    #
-    #     obs_f = tk.Frame(inner, bg=BG_CARD)
-    #     obs_f.pack(fill="x")
-    #     obs_f.columnconfigure(1, weight=1)
-    #     for i, name in enumerate(OBS_NAMES_DISPLAY):
-    #         fg_name = "#5856D6" if name == "comfort_band" else "gray"
-    #         lbl(obs_f, name, fg=fg_name, size=11) \
-    #             .grid(row=i, column=0, sticky="w", padx=(0, 12), pady=2)
-    #         w = lbl(obs_f, "---", bold=True, size=11, anchor="e")
-    #         w.grid(row=i, column=1, sticky="e", pady=2)
-    #         self.obs_lbl[name] = w
-    #
-    #     lbl(inner, "Console", bold=True, size=12) \
-    #         .pack(fill="x", pady=(12, 4))
-    #     self.console = tk.Text(inner, wrap="word", state="disabled",
-    #                            font=("Courier", 11), relief="flat", bd=0,
-    #                            bg="#F8F8F8", padx=8, pady=8, height=10)
-    #     self.console.pack(fill="both", expand=True)
-    #     log(self.console, "GUI ready.")
-    #     log(self.console, "Load the neural policy before switching to it.")
-    #     log(self.console, "Add perturbations and press Start to begin a session.")
 
     def build_unified_plot(self, parent):
         """Unified plot: baseline (blue) + sim (orange)."""
